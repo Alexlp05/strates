@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Strates · cartographie de tes écoutes</title>
+  <meta name="description" content="Tes écoutes Last.fm empilées en une ville 3D : une couche par écoute, une tour par album.">
+  <meta name="theme-color" content="#07060d">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/style.css">
+  <script type="importmap">
+{ "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/addons/" } }
+</script>
+  <script type="module" src="/js/main.js"></script>
+</head>
+<body>
+  <div id="scene" aria-hidden="true"></div>
+  <div id="labels" aria-hidden="true"></div>
+  <div id="fallback" class="fallback" hidden></div>
+
+  <header class="hud-top">
+    <div class="brand">
+      <h1><span class="logo" aria-hidden="true"><i></i><i></i><i></i></span>Strates</h1>
+      <p class="subtitle"><button id="user-btn" class="user-btn" type="button" title="Changer d'utilisateur">…</button><span id="summary">chargement…</span></p>
+    </div>
+    <nav class="controls" aria-label="Réglages">
+      <div class="segmented" id="range" role="group" aria-label="Période">
+        <button type="button" data-range="recent" aria-pressed="true">200<span class="long"> dernières</span></button>
+        <button type="button" data-range="24h" aria-pressed="false">24 h</button>
+        <button type="button" data-range="7d" aria-pressed="false">7 j</button>
+        <button type="button" data-range="30d" aria-pressed="false">30 j</button>
+        <button type="button" data-range="1y" aria-pressed="false">1 an</button>
+        <button type="button" data-range="all" aria-pressed="false">Tout</button>
+      </div>
+      <div class="tool-row">
+        <button type="button" id="btn-view" class="chip" aria-pressed="false" title="Basculer vue carte / vue ville">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2Zm0 2.2 6 2v11.6l-6-2V6.2Z"/></svg>
+          <span>Vue carte</span>
+        </button>
+        <button type="button" id="btn-rank" class="chip" aria-pressed="false" aria-controls="ranking">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18h4v-7H4v7Zm6 0h4V6h-4v12Zm6 0h4v-4h-4v4Z"/></svg>
+          <span>Classement</span>
+        </button>
+      </div>
+    </nav>
+  </header>
+
+  <div id="status" class="status" role="status" aria-live="polite"></div>
+  <div id="banner" class="banner" role="alert" hidden></div>
+
+  <aside id="ranking" class="drawer" aria-label="Classement des albums" hidden>
+    <div class="drawer-head">
+      <h2>Classement</h2>
+      <button type="button" class="close" data-close="ranking" aria-label="Fermer le classement">×</button>
+    </div>
+    <div id="stats" class="stats"></div>
+    <ol id="rank-list" class="rank-list"></ol>
+  </aside>
+
+  <aside id="panel" class="panel" aria-label="Détail de l'album" hidden>
+    <button type="button" class="close" data-close="panel" aria-label="Fermer">×</button>
+    <div id="panel-body"></div>
+  </aside>
+
+  <div id="now-playing" class="now-playing" hidden>
+    <span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+    <span class="np-text"><small>En écoute</small><strong id="np-title"></strong></span>
+  </div>
+
+  <div id="tooltip" class="tooltip" hidden></div>
+
+  <footer class="timeline" aria-label="Frise des écoutes">
+    <button type="button" id="btn-play" class="round" aria-label="Rejouer la période">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path class="i-play" d="M8 5v14l11-7z"/><path class="i-pause" d="M7 5h4v14H7zm6 0h4v14h-4z"/></svg>
+    </button>
+    <div class="timeline-body">
+      <div class="timeline-head">
+        <span id="clock" class="clock">—</span>
+        <button type="button" id="btn-live" class="live" hidden>Revenir au présent</button>
+      </div>
+      <div class="timeline-track" id="timeline-track">
+        <canvas id="timeline"></canvas>
+      </div>
+    </div>
+  </footer>
+
+  <div id="message" class="message" hidden>
+    <div class="card" role="alertdialog" aria-labelledby="message-title" aria-describedby="message-text">
+      <div class="card-icon" id="message-icon" aria-hidden="true"></div>
+      <h2 id="message-title"></h2>
+      <p id="message-text"></p>
+      <div class="actions" id="message-actions"></div>
+    </div>
+  </div>
+
+  <div id="loader" class="loader">
+    <div class="loader-stack" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+    <p id="loader-text">Chargement des écoutes…</p>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <noscript><p class="noscript">Strates a besoin de JavaScript pour dessiner ta ville d'écoutes.</p></noscript>
+</body>
+</html>

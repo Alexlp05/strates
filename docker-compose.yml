@@ -1,0 +1,27 @@
+services:
+  app:
+    build: .
+    image: strates
+    init: true
+    ports:
+      - "${PORT:-3000}:3000"
+    # Les valeurs viennent du fichier .env (lu automatiquement par Docker Compose)
+    # ou des variables d'environnement du shell. Sans .env, l'app démarre quand
+    # même et explique ce qui manque.
+    environment:
+      LASTFM_API_KEY: ${LASTFM_API_KEY:-}
+      LASTFM_USER: ${LASTFM_USER:-}
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-60}
+      MIN_PLAYS: ${MIN_PLAYS:-3}
+      MAX_ALBUMS: ${MAX_ALBUMS:-1500}
+      HISTORY_MAX_PAGES: ${HISTORY_MAX_PAGES:-1000}
+      # Pour simuler une panne de Last.fm : LASTFM_API_URL=http://127.0.0.1:9/
+      LASTFM_API_URL: ${LASTFM_API_URL:-https://ws.audioscrobbler.com/2.0/}
+    # L'archive des écoutes survit aux redémarrages : l'historique complet
+    # n'est téléchargé qu'une seule fois.
+    volumes:
+      - strates-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  strates-data:

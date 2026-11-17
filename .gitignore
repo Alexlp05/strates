@@ -1,0 +1,12 @@
+# Secrets : la clé API ne doit jamais être commitée
+.env
+.env.*
+!.env.example
+
+node_modules/
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Archive des écoutes (données personnelles, recréée automatiquement)
+data/
