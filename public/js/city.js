@@ -50,27 +50,25 @@ const rand = (seed) => {
   return x - Math.floor(x);
 };
 
-// Cases de la grille, du centre vers l'extérieur, anneau par anneau, dans le
-// sens des aiguilles d'une montre.
-function spiralCells(n) {
-  const k = Math.ceil(Math.sqrt(n) / 2) + 3;
-  const cells = [];
-  for (let i = -k; i <= k; i++) {
-    for (let j = -k; j <= k; j++) {
-      const ring = Math.round(Math.hypot(i, j));
-      const a = (Math.atan2(j, i) + Math.PI * 2.25) % (Math.PI * 2);
-      cells.push({ i, j, ring, a });
-    }
+// Les quartiers. Chaque artiste de plusieurs albums « pousse » comme une
+// tache à partir d'une case de départ : on ajoute une à une les cases libres
+// voisines, en préférant celles qui gardent le quartier compact et proche du
+// centre, avec un peu de hasard (toujours le même pour un artiste donné) pour
+// des formes irrégulières. Les quartiers se touchent et s'emboîtent comme des
+// pièces de puzzle. Les gros artistes, posés en premier, forment le
+// centre-ville ; les artistes d'un seul album bouchent les trous.
+const N4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const cellKey = (i, j) => `${i},${j}`;
+
+function hashUnit(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
   }
-  cells.sort((p, q) => p.ring - q.ring || p.a - q.a);
-  return cells.slice(0, n);
+  return (h >>> 0) / 4294967296;
 }
 
-// Les quartiers. Les albums d'un même artiste forment un bloc compact
-// (le plus écouté du côté du centre-ville) et deux quartiers sont toujours
-// séparés par une rue d'une case. Les gros artistes sont posés en premier,
-// donc au centre ; les artistes d'un seul album remplissent les trous, en
-// banlieue. Grille : 0 = libre, 1 = bâtiment, 2 = rue.
 function districtLayout(albums, artists) {
   const rank = new Map(artists.map((a, i) => [a.name.toLowerCase(), i]));
   const groups = new Map();
@@ -83,74 +81,129 @@ function districtLayout(albums, artists) {
   }
   const ordered = [...groups.values()].sort((a, b) => (rank.get(a.key) ?? 1e9) - (rank.get(b.key) ?? 1e9) || b.plays - a.plays);
 
-  const grid = new Map();
-  const at = (i, j) => grid.get(`${i},${j}`) || 0;
-  const fits = (i0, j0, w, h, isDistrict) => {
-    for (let i = i0 - 1; i <= i0 + w; i++) {
-      for (let j = j0 - 1; j <= j0 + h; j++) {
-        const inside = i >= i0 && i < i0 + w && j >= j0 && j < j0 + h;
-        const v = at(i, j);
-        if (inside ? v !== 0 : isDistrict && v === 1) return false;
+  const taken = new Set();
+  const frontier = new Map([[cellKey(0, 0), { i: 0, j: 0 }]]); // cases libres au bord de la ville (ou dans un trou)
+  const take = (c) => {
+    taken.add(cellKey(c.i, c.j));
+    frontier.delete(cellKey(c.i, c.j));
+    for (const [di, dj] of N4) {
+      const k = cellKey(c.i + di, c.j + dj);
+      if (!taken.has(k)) frontier.set(k, { i: c.i + di, j: c.j + dj });
+    }
+  };
+  // Y a-t-il au moins n cases libres reliées à c ? (sinon le quartier resterait coincé dans un trou)
+  const room = (c, n) => {
+    const seen = new Set([cellKey(c.i, c.j)]);
+    const queue = [c];
+    while (queue.length && seen.size < n) {
+      const { i, j } = queue.shift();
+      for (const [di, dj] of N4) {
+        const k = cellKey(i + di, j + dj);
+        if (seen.has(k) || taken.has(k)) continue;
+        seen.add(k);
+        queue.push({ i: i + di, j: j + dj });
       }
     }
-    return true;
+    return seen.size >= n;
   };
 
-  let spiral = spiralCells(Math.ceil(albums.length * 3.2) + 64);
-  let start = 0;
   const cellOf = new Map();
   const districts = [];
   for (const g of ordered) {
     g.albums.sort((a, b) => b.plays - a.plays || (b.last || 0) - (a.last || 0));
     const n = g.albums.length;
-    const w = Math.ceil(Math.sqrt(n));
-    const h = Math.ceil(n / w);
-    const isDistrict = n > 1;
-    while (start < spiral.length && at(spiral[start].i, spiral[start].j)) start++;
-    let spot = null;
-    while (!spot) {
-      for (let s = start; s < spiral.length && !spot; s++) {
-        const i0 = spiral[s].i - Math.floor((w - 1) / 2);
-        const j0 = spiral[s].j - Math.floor((h - 1) / 2);
-        if (fits(i0, j0, w, h, isDistrict)) spot = { i0, j0 };
-      }
-      if (!spot) spiral = spiralCells(spiral.length * 2); // ville plus grande que prévu
-    }
-    const cells = [];
-    for (let i = spot.i0 - 1; i <= spot.i0 + w; i++) {
-      for (let j = spot.j0 - 1; j <= spot.j0 + h; j++) {
-        const inside = i >= spot.i0 && i < spot.i0 + w && j >= spot.j0 && j < spot.j0 + h;
-        if (inside) {
-          grid.set(`${i},${j}`, 1);
-          cells.push({ i, j });
-        } else if (isDistrict && !at(i, j)) grid.set(`${i},${j}`, 2);
+    const salt = hashUnit(g.key) * 1000;
+    const noise = (i, j) => rand(salt + i * 3.17 + j * 11.31);
+
+    // case de départ : au bord de la ville, la plus proche du centre (± un peu de hasard)
+    let seed = null;
+    let best = Infinity;
+    for (const c of frontier.values()) {
+      const s = Math.hypot(c.i, c.j) + noise(c.i, c.j) * 0.8;
+      if (s < best && (n === 1 || room(c, n))) {
+        best = s;
+        seed = c;
       }
     }
-    // la tour la plus haute du quartier regarde le centre-ville
-    cells.sort((a, b) => a.i * a.i + a.j * a.j - (b.i * b.i + b.j * b.j));
-    g.albums.forEach((album, k) => cellOf.set(album.id, cells[k]));
-    if (isDistrict) districts.push({ key: g.key, name: g.name, plays: g.plays, albumIds: g.albums.map((a) => a.id) });
+    const region = [seed];
+    const inRegion = new Set([cellKey(seed.i, seed.j)]);
+    take(seed);
+
+    // croissance : compacte, vers le centre, irrégulière
+    while (region.length < n) {
+      const ci = region.reduce((s, c) => s + c.i, 0) / region.length;
+      const cj = region.reduce((s, c) => s + c.j, 0) / region.length;
+      let pick = null;
+      let bestScore = Infinity;
+      for (const c of region) {
+        for (const [di, dj] of N4) {
+          const i = c.i + di, j = c.j + dj;
+          if (taken.has(cellKey(i, j))) continue;
+          let touching = 0;
+          for (const [ei, ej] of N4) if (inRegion.has(cellKey(i + ei, j + ej))) touching++;
+          const score = Math.hypot(i - ci, j - cj) + Math.hypot(i, j) * 0.3 - touching * 0.55 + noise(i, j) * 1.1;
+          if (score < bestScore) {
+            bestScore = score;
+            pick = { i, j };
+          }
+        }
+      }
+      if (!pick) pick = [...frontier.values()][0]; // (ne devrait pas arriver grâce à room())
+      region.push(pick);
+      inRegion.add(cellKey(pick.i, pick.j));
+      take(pick);
+    }
+
+    // la tour la plus haute au cœur du quartier
+    const ci = region.reduce((s, c) => s + c.i, 0) / n;
+    const cj = region.reduce((s, c) => s + c.j, 0) / n;
+    region.sort((a, b) => Math.hypot(a.i - ci, a.j - cj) - Math.hypot(b.i - ci, b.j - cj));
+    g.albums.forEach((album, k) => cellOf.set(album.id, region[k]));
+    if (n > 1) districts.push({ key: g.key, name: g.name, plays: g.plays, albumIds: g.albums.map((a) => a.id), cells: inRegion });
   }
   return { cellOf, districts };
 }
 
-// Le sol d'un quartier : un plan arrondi, contour fin aux coins marqués,
-// hachures très légères, à la couleur de son album le plus écouté.
+// Voisins d'une case appartenant au même quartier, sous forme de bits
+// (lus par le shader du sol pour savoir où tracer le contour).
+// Le plan est tourné : « nord » dans la texture = vers -z = j - 1.
+const MASK_BITS = [
+  [1, 0, 1], // est
+  [-1, 0, 2], // ouest
+  [0, -1, 4], // nord
+  [0, 1, 8], // sud
+  [1, -1, 16], // nord-est
+  [-1, -1, 32], // nord-ouest
+  [1, 1, 64], // sud-est
+  [-1, 1, 128], // sud-ouest
+];
+function neighbourMask(c, cells) {
+  let m = 0;
+  for (const [di, dj, bit] of MASK_BITS) if (cells.has(cellKey(c.i + di, c.j + dj))) m |= bit;
+  return m;
+}
+
+// Le sol d'un quartier, dessiné case par case : chaque case connaît ses
+// voisines du même quartier (aMask) et ne trace le contour que du côté des
+// autres. On obtient la forme exacte du quartier, quelle qu'elle soit, avec
+// des angles arrondis, un contour lumineux, des hachures très légères, à la
+// couleur de son album le plus écouté. Entre deux quartiers qui se touchent,
+// les deux contours forment un double trait, comme une rue.
 const PLATE_VS = /* glsl */ `
 attribute vec3 aColor;
-attribute vec2 aSize;
+attribute float aMask;
 attribute float aHi;
 varying vec2 vP;
-varying vec2 vHalf;
 varying vec3 vColor;
+varying float vMask;
 varying float vHi;
 varying vec3 vWorld;
 void main() {
   vec4 w = modelMatrix * instanceMatrix * vec4(position, 1.0);
   vWorld = w.xyz;
-  vP = (uv - 0.5) * aSize;
-  vHalf = aSize * 0.5;
+  vP = uv - 0.5; // position dans la case, de -0.5 à 0.5
   vColor = aColor;
+  vMask = aMask;
   vHi = aHi;
   gl_Position = projectionMatrix * viewMatrix * w;
 }`;
@@ -158,35 +211,56 @@ void main() {
 const PLATE_FS = /* glsl */ `
 uniform float uFogDensity;
 uniform float uBoost;
+uniform float uCell;
 varying vec2 vP;
-varying vec2 vHalf;
 varying vec3 vColor;
+varying float vMask;
 varying float vHi;
 varying vec3 vWorld;
 
-float sdRoundBox(vec2 p, vec2 b, float r) {
-  vec2 q = abs(p) - b + r;
-  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+float smin(float a, float b, float k) {
+  float h = max(k - abs(a - b), 0.0) / k;
+  return min(a, b) - h * h * k * 0.25;
 }
 
 void main() {
-  vec2 inner = vHalf - 0.07;
-  float d = sdRoundBox(vP, inner, 0.3); // < 0 dans le quartier
-  float fw = fwidth(d);
-  float inside = 1.0 - smoothstep(-fw, fw, d);
-  float edge = 1.0 - smoothstep(0.014, 0.014 + fw * 1.5, abs(d));
-  float rim = inside * exp(d * 2.6);
-  // coins renforcés, comme les repères d'un plan d'urbanisme
-  vec2 a = abs(vP) - inner;
-  float corner = smoothstep(-0.75, -0.45, a.x) * smoothstep(-0.75, -0.45, a.y);
-  // hachures diagonales
-  float hs = (vP.x + vP.y) * 3.2;
+  int m = int(vMask + 0.5);
+  bool E = (m & 1) != 0, W = (m & 2) != 0, N = (m & 4) != 0, S = (m & 8) != 0;
+  vec2 p = vP;
+
+  // distance (en cases) au bord du quartier : côtés sans voisin…
+  float dx = 4.0, dy = 4.0;
+  if (!E) dx = min(dx, 0.5 - p.x);
+  if (!W) dx = min(dx, 0.5 + p.x);
+  if (!N) dy = min(dy, 0.5 - p.y);
+  if (!S) dy = min(dy, 0.5 + p.y);
+  float d = smin(dx, dy, 0.4); // (min « doux » : angles saillants arrondis)
+  // … et angles rentrants (deux voisins présents mais pas la case en diagonale)
+  if (E && N && (m & 16) == 0) d = min(d, length(vec2(0.5, 0.5) - p));
+  if (W && N && (m & 32) == 0) d = min(d, length(vec2(-0.5, 0.5) - p));
+  if (E && S && (m & 64) == 0) d = min(d, length(vec2(0.5, -0.5) - p));
+  if (W && S && (m & 128) == 0) d = min(d, length(vec2(-0.5, -0.5) - p));
+  d *= uCell;
+
+  float e = d - 0.085; // contour légèrement en retrait du bord de la case
+  float fw = fwidth(e);
+  float inside = smoothstep(-fw, fw, e);
+  // (le trait garde au moins un pixel de large, même vu de loin)
+  float lw = 0.014 + fw * 0.75;
+  float edge = 1.0 - smoothstep(lw, lw + fw * 1.5, abs(e));
+  float rim = inside * exp(-e * 2.6);
+  // angles saillants renforcés, comme les repères d'un plan d'urbanisme
+  float corner = smoothstep(0.75, 0.45, dx * uCell) * smoothstep(0.75, 0.45, dy * uCell);
+  // hachures diagonales, continues d'une case à l'autre
+  float hs = (vWorld.x + vWorld.z) * 3.2;
   float hatch = inside * (1.0 - smoothstep(0.05, 0.05 + fwidth(hs) * 1.5, abs(fract(hs) - 0.5)));
 
-  float k = edge * (0.26 + corner * 0.5 + vHi * 0.85)
-          + rim * (0.08 + vHi * 0.22)
-          + hatch * (0.045 + vHi * 0.07)
-          + inside * (0.02 + vHi * 0.04);
+  // les quartiers se touchent : un fond teinté un peu plus présent les
+  // distingue même de loin, quand le contour devient trop fin
+  float k = edge * (0.36 + corner * 0.45 + vHi * 0.85)
+          + rim * (0.12 + vHi * 0.22)
+          + hatch * (0.055 + vHi * 0.07)
+          + inside * (0.05 + vHi * 0.05);
   float dist = length(vWorld - cameraPosition);
   float fog = exp(-uFogDensity * uFogDensity * dist * dist);
   gl_FragColor = vec4(vColor * k * uBoost * fog, 1.0);
@@ -570,24 +644,24 @@ export class City extends EventTarget {
     this.footprints.renderOrder = 1;
     scene.add(this.footprints);
 
-    // Le sol des quartiers (un plan par artiste de plusieurs albums)
-    const plateGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
-    this.plateColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_DISTRICTS * 3), 3).setUsage(THREE.DynamicDrawUsage);
-    this.plateSize = new THREE.InstancedBufferAttribute(new Float32Array(MAX_DISTRICTS * 2), 2).setUsage(THREE.DynamicDrawUsage);
-    this.plateHi = new THREE.InstancedBufferAttribute(new Float32Array(MAX_DISTRICTS), 1).setUsage(THREE.DynamicDrawUsage);
+    // Le sol des quartiers : une dalle par case de quartier, toutes dans un seul InstancedMesh
+    const plateGeo = new THREE.PlaneGeometry(CELL, CELL).rotateX(-Math.PI / 2);
+    this.plateColor = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PILES * 3), 3).setUsage(THREE.DynamicDrawUsage);
+    this.plateMask = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PILES), 1).setUsage(THREE.DynamicDrawUsage);
+    this.plateHi = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PILES), 1).setUsage(THREE.DynamicDrawUsage);
     plateGeo.setAttribute('aColor', this.plateColor);
-    plateGeo.setAttribute('aSize', this.plateSize);
+    plateGeo.setAttribute('aMask', this.plateMask);
     plateGeo.setAttribute('aHi', this.plateHi);
     this.plateMat = new THREE.ShaderMaterial({
       vertexShader: PLATE_VS,
       fragmentShader: PLATE_FS,
-      uniforms: { uFogDensity: { value: 0.02 }, uBoost: { value: 1 } },
+      uniforms: { uFogDensity: { value: 0.02 }, uBoost: { value: 1 }, uCell: { value: CELL } },
       transparent: true,
       depthWrite: false,
       blending: THREE.AdditiveBlending,
       toneMapped: false,
     });
-    this.plates = new THREE.InstancedMesh(plateGeo, this.plateMat, MAX_DISTRICTS);
+    this.plates = new THREE.InstancedMesh(plateGeo, this.plateMat, MAX_PILES);
     this.plates.count = 0;
     this.plates.frustumCulled = false;
     this.plates.renderOrder = 1;
@@ -801,7 +875,10 @@ export class City extends EventTarget {
     }
     this.districts = districts.slice(0, MAX_DISTRICTS).map((d) => {
       const district = { ...d, piles: d.albumIds.map((id) => this.piles.get(id)), hi: 0 };
-      for (const p of district.piles) p.district = district;
+      for (const p of district.piles) {
+        p.district = district;
+        p.plateMask = neighbourMask(cellOf.get(p.id), d.cells);
+      }
       return district;
     });
 
@@ -1340,50 +1417,44 @@ export class City extends EventTarget {
     this.footprints.instanceColor.needsUpdate = true;
   }
 
-  // Le sol de chaque quartier suit ses tours : il apparaît avec la première
-  // (pendant la relecture), glisse avec elles, et s'éclaire quand on survole
-  // ou ouvre un de ses albums.
+  // Le sol de chaque quartier suit ses tours : il apparaît en entier avec la
+  // première (pendant la relecture), glisse avec elles quand la ville se
+  // réorganise, et s'éclaire quand on survole ou ouvre un de ses albums.
   _updateDistricts(dt) {
     const colors = this.plateColor.array;
-    const sizes = this.plateSize.array;
+    const masks = this.plateMask.array;
     const his = this.plateHi.array;
     this.plateBoost = damp(this.plateBoost ?? 1, this.view === 'map' ? 1.7 : 1, 4, dt);
     this.plateMat.uniforms.uBoost.value = this.plateBoost;
     let n = 0;
     for (const d of this.districts) {
-      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
       let presence = 0, dim = 1, hot = 0;
       for (const p of d.piles) {
         if (!p.alive) continue;
-        x0 = Math.min(x0, p.pos.x);
-        x1 = Math.max(x1, p.pos.x);
-        z0 = Math.min(z0, p.pos.z);
-        z1 = Math.max(z1, p.pos.z);
         presence = Math.max(presence, p.presence);
         dim = Math.min(dim, p.dim);
         if (this.hovered?.pile === p || this.focused === p) hot = 1;
       }
       d.hi = damp(d.hi, hot, 8, dt);
-      if (presence < 0.01 || n >= MAX_DISTRICTS) continue;
-      const sx = x1 - x0 + CELL;
-      const sz = z1 - z0 + CELL;
-      _p.set((x0 + x1) / 2, 0.008, (z0 + z1) / 2);
-      _m.compose(_p, ID_Q, _s.set(sx, 1, sz));
-      this.plates.setMatrixAt(n, _m);
+      if (presence < 0.01) continue;
       const c = d.piles[0].color; // couleur de l'album le plus écouté du quartier
       const k = presence * (1 - dim * 0.85);
-      colors[n * 3] = c.r * k;
-      colors[n * 3 + 1] = c.g * k;
-      colors[n * 3 + 2] = c.b * k;
-      sizes[n * 2] = sx;
-      sizes[n * 2 + 1] = sz;
-      his[n] = d.hi;
-      n++;
+      for (const p of d.piles) {
+        if (!p.alive || n >= MAX_PILES) continue;
+        _m.makeTranslation(p.pos.x, 0.008, p.pos.z);
+        this.plates.setMatrixAt(n, _m);
+        colors[n * 3] = c.r * k;
+        colors[n * 3 + 1] = c.g * k;
+        colors[n * 3 + 2] = c.b * k;
+        masks[n] = p.plateMask;
+        his[n] = d.hi;
+        n++;
+      }
     }
     this.plates.count = n;
     this.plates.instanceMatrix.needsUpdate = true;
     this.plateColor.needsUpdate = true;
-    this.plateSize.needsUpdate = true;
+    this.plateMask.needsUpdate = true;
     this.plateHi.needsUpdate = true;
   }
 
