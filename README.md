@@ -26,7 +26,7 @@ La **frise** en bas est un histogramme peint avec les couleurs des pochettes. On
 Prérequis : Docker, et une clé API Last.fm ([créer une clé](https://www.last.fm/api/account/create)).
 
 ```bash
-git clone <ce-dépôt> strates
+git clone https://github.com/Alexlp05/strates.git
 cd strates
 cp .env.example .env      # puis mets ta clé et ton pseudo dans .env
 docker compose up
