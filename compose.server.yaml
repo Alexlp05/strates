@@ -1,0 +1,27 @@
+# Ce qui change sur le serveur du cours (en plus de docker-compose.yml) :
+#   docker compose -f docker-compose.yml -f compose.server.yaml up -d --build
+#
+# - Caddy devient la seule porte d'entrée : il reçoit tout sur les ports 80
+#   et 443, obtient le certificat HTTPS (Let's Encrypt) et passe les requêtes
+#   à l'app.
+# - L'app ne publie plus de port : on ne peut la joindre qu'à travers Caddy,
+#   sur le réseau privé du projet.
+services:
+  app:
+    ports: !reset []
+    restart: unless-stopped
+  caddy:
+    image: caddy:2.11-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # le certificat : gardé d'un redémarrage à l'autre
+      - caddy-config:/config
+volumes:
+  caddy-data:
+  caddy-config:

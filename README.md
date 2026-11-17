@@ -34,6 +34,8 @@ docker compose up
 
 Ouvre ensuite **http://localhost:3000**.
 
+En ligne : **https://student15.wt.thomasjuldo.com** (voir [Mise en ligne](#mise-en-ligne)).
+
 Sans `.env`, l'application démarre quand même et la page explique qu'il manque la clé.
 
 **Premier lancement** : le serveur récupère tout l'historique Last.fm en tâche de fond (200 écoutes par appel, environ 2 min 30 pour 28 000 écoutes). La page s'affiche tout de suite avec ce qui est déjà là, et un bandeau montre l'avancement. L'archive est ensuite gardée dans le volume Docker `strates-data` : aux lancements suivants, seules les nouvelles écoutes sont demandées. `docker compose down -v` efface l'archive.
@@ -47,7 +49,7 @@ Sans Docker (Node 20 ou plus) : `npm install` puis `npm run dev`.
 | `LASTFM_API_KEY` | — | clé API (obligatoire, reste sur le serveur) |
 | `LASTFM_USER` | — | utilisateur affiché par défaut |
 | `CACHE_TTL_SECONDS` | `60` | Last.fm est consulté au plus une fois par période, quel que soit le nombre de visiteurs |
-| `MIN_PLAYS` | `3` | une tour par album écouté au moins 3 fois (sur une petite période de 200 albums ou moins : tous les albums) |
+| `MIN_PLAYS` | `3` | une tour par album écouté au moins 3 fois (sur une petite période de 200 albums ou moins : tous les albums). C'est la valeur « Auto » du panneau Réglages |
 | `MAX_ALBUMS` | `1500` | sécurité pour les très grosses bibliothèques : nombre maximum de tours |
 | `HISTORY_MAX_PAGES` | `1000` | limite de l'historique récupéré, en pages de 200 écoutes (1000 = 200 000 écoutes) |
 | `PORT` | `3000` | port exposé |
@@ -59,10 +61,27 @@ Sans Docker (Node 20 ou plus) : `npm install` puis `npm run dev`.
 - **Cliquer** une tour : les couches s'écartent (une par écoute) et le panneau détaille les morceaux.
 - **Vue carte** : vue du dessus, la ville devient une mosaïque de pochettes.
 - **Classement** : la liste des albums, pour tout retrouver sans la 3D.
+- **Réglages** : voir ci-dessous.
 - **Période** : 200 dernières écoutes, 24 h, 7 jours, 30 jours, 1 an, tout l'historique.
 - `?user=pseudo` dans l'URL affiche la ville de quelqu'un d'autre.
 
 La page se rafraîchit toute seule (toutes les 60 s) : une nouvelle écoute tombe sur sa tour et envoie une onde sur la carte.
+
+### Réglages
+
+Le bouton **Réglages** ouvre un panneau qui change la ville sans toucher au code. Les choix sont gardés dans le navigateur (`localStorage`).
+
+| Réglage | Choix | Effet |
+| --- | --- | --- |
+| Écoutes par couche | Auto, 1, 2, 5… 100 | l'échelle des tours. Le serveur respecte le choix tant que la ville reste dessinable (au plus 3 000 couches, 150 par tour) ; sinon il prend la plus petite unité possible et le panneau le dit |
+| Minimum d'écoutes pour une tour | Auto, 1, 2, 3… 20 | quels albums deviennent des tours (Auto : la valeur de `MIN_PLAYS`) |
+| Couleurs des tours | Pochettes, Artistes, Récence, Écoutes, Unie | la couleur de la pochette ; une couleur par artiste ; froid → chaud selon la dernière écoute ; sombre → clair selon le nombre d'écoutes ; une seule couleur au choix. La frise et le classement prennent les mêmes couleurs |
+| Fond | Nuit, Minuit, Aurore, Crépuscule, Encre | le ciel, la brume et la carte |
+| Forme | Carré, Rond, Hexagone | la forme des couches et des pochettes (Rond : une pile de vinyles) |
+| Disposition | Quartiers par artiste, Par écoutes | avec ou sans quartiers |
+| Effets | interrupteurs | noms et sols des quartiers, étoiles, grille, halo lumineux, rotation automatique |
+
+Les deux premiers réglages partent au serveur avec la demande (`/api/listening?unit=5&minPlays=2`) : il reconstruit la vue à partir de son archive, **sans rappeler Last.fm**. Les autres ne changent que l'affichage et s'appliquent tout de suite.
 
 ## Comment ça marche
 
@@ -88,6 +107,8 @@ public/
   js/timeline.js  la frise (canvas 2D)
   js/covers.js    pochettes : chargement, couleur dominante, pochette générée si absente
   js/ui.js        panneau, classement, info-bulle, messages
+  js/settings.js  le panneau Réglages
+compose.server.yaml, Caddyfile   mise en ligne (voir plus bas)
 ```
 
 - **L'archive** (`history.js`) : le serveur garde toutes les écoutes déjà vues. Un rafraîchissement ne demande à Last.fm que la page 1 (les 200 plus récentes et le morceau en cours) et y ajoute ce qui est nouveau. Pour « 1 an » et « Tout », il remonte une seule fois l'historique avec le paramètre `to` (« écoutes avant telle date »), page après page, en faisant une courte pause entre deux appels, puis l'enregistre sur le disque.
@@ -97,6 +118,32 @@ public/
 - **Les pochettes** : les ~220 albums les plus écoutés ont leur pochette en 300×300, les autres en 64×64 (20 fois moins de mémoire graphique), remplacée par la grande quand on ouvre l'album.
 - **La 3D** : toutes les couches sont dans un seul `InstancedMesh` (un seul appel de dessin pour des milliers de couches). La lueur de chaque couche est un attribut par instance ajouté au shader standard. Le sol, le ciel et le faisceau sont des shaders écrits à la main.
 - **Les couleurs** : chaque pochette est réduite à 32×32 px dans un canvas, les pixels sont regroupés par teinte en favorisant les plus saturés, et on garde le groupe le plus lourd.
+- **Les réglages d'apparence** (`City.setLook`) : changer la forme remplace la géométrie partagée par toutes les couches (un seul objet pour des milliers d'instances) ; changer les couleurs recalcule la couleur de chaque tour ; changer le fond change les couleurs de base du ciel et de la brume. Rien n'est rechargé.
+
+## Mise en ligne
+
+L'app tourne sur le serveur du cours, derrière **Caddy** qui ajoute le HTTPS : **https://student15.wt.thomasjuldo.com**.
+
+Le serveur utilise le même `docker-compose.yml` plus `compose.server.yaml`, qui ajoute Caddy (seul service ouvert sur Internet, ports 80 et 443) et retire le port de l'app : on ne peut la joindre qu'à travers Caddy. Le `Caddyfile` envoie toutes les requêtes à l'app, qui sert la page et l'API au même endroit.
+
+Première installation (sur le serveur) :
+
+```bash
+git clone https://github.com/Alexlp05/strates.git
+cd strates
+nano .env                 # LASTFM_API_KEY=… et LASTFM_USER=… (jamais commité)
+docker compose -f docker-compose.yml -f compose.server.yaml up -d --build
+```
+
+Mise à jour, après un `git push` :
+
+```bash
+cd strates
+git pull
+docker compose -f docker-compose.yml -f compose.server.yaml up -d --build
+```
+
+Les volumes restent : l'archive des écoutes et le certificat HTTPS survivent aux mises à jour. Les logs : `docker compose -f docker-compose.yml -f compose.server.yaml logs --tail 50`.
 
 ## Les règles du projet, et où les vérifier
 

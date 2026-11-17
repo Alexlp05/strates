@@ -50,6 +50,72 @@ const rand = (seed) => {
   return x - Math.floor(x);
 };
 
+// ---------------------------------------------------------------- apparence
+// Ce que le panneau « Réglages » peut changer (voir settings.js). Tout est
+// appliqué tout de suite, sans recharger les données.
+
+export const LOOK_DEFAULTS = {
+  colors: 'cover', // couleur des tours : cover, artist, time, plays, mono
+  mono: '#a68bff', // la couleur du mode « Unie »
+  sky: 'night', // le fond (voir SKIES)
+  shape: 'square', // la forme des tours (voir SHAPES)
+  group: true, // quartiers par artiste (sinon : rangées par écoutes)
+  labels: true,
+  plates: true,
+  stars: true,
+  grid: true,
+  bloom: true,
+  rotate: true,
+};
+
+// Forme des tours : la couche (dalle) et le toit (pochette).
+const SHAPES = {
+  square: {
+    slab: (h) => new RoundedBoxGeometry(1, h, 1, 2, Math.min(0.05, h * 0.3)),
+    cover: () => new THREE.PlaneGeometry(COVER, COVER),
+  },
+  // un disque : la tour devient une pile de vinyles, la pochette un rond
+  round: {
+    slab: (h) => new THREE.CylinderGeometry(0.56, 0.56, h, 40),
+    cover: () => new THREE.CircleGeometry(COVER * 0.54, 48),
+  },
+  // un hexagone à facettes nettes (pointe alignée sur celle de la pochette)
+  hexagon: {
+    slab: (h) => facets(new THREE.CylinderGeometry(0.6, 0.6, h, 6, 1, false, Math.PI / 6)),
+    cover: () => new THREE.CircleGeometry(COVER * 0.58, 6),
+  },
+};
+// Une normale par face : les arêtes restent vives au lieu d'être lissées.
+function facets(geo) {
+  const flat = geo.toNonIndexed();
+  flat.computeVertexNormals();
+  geo.dispose();
+  return flat;
+}
+
+// Les fonds. `mood` : couleur dominante ; `tint` : part de la couleur des
+// pochettes mêlée au fond (0 à 1) ; `glow` : lueur à l'horizon ; `aurora` :
+// force du voile coloré dans le ciel.
+export const SKIES = {
+  night: { name: 'Nuit', fog: '#06050e', base: '#040309', top: '#010105', mood: '#3a2a8c', line: '#8a80d6', hemi: '#b9b0ff', tint: 1, glow: 0.12, aurora: 0.2 },
+  midnight: { name: 'Minuit', fog: '#030914', base: '#02060e', top: '#000207', mood: '#1d4fb0', line: '#6f9fe8', hemi: '#a9c6ff', tint: 0.5, glow: 0.14, aurora: 0.25 },
+  aurora: { name: 'Aurore', fog: '#03100e', base: '#020a09', top: '#000504', mood: '#14a37a', line: '#5ad8b0', hemi: '#a6ffe0', tint: 0.25, glow: 0.1, aurora: 0.55 },
+  dusk: { name: 'Crépuscule', fog: '#140609', base: '#0c0406', top: '#040102', mood: '#c0364f', line: '#e8869a', hemi: '#ffb8c4', tint: 0.35, glow: 0.22, aurora: 0.2 },
+  ink: { name: 'Encre', fog: '#030304', base: '#020202', top: '#000000', mood: '#2c2c36', line: '#70707e', hemi: '#d8d8e6', tint: 0, glow: 0.08, aurora: 0 },
+};
+
+// Dégradés des modes « Récence » (ancienne → récente) et « Écoutes » (peu → beaucoup).
+export const SCALES = {
+  time: ['#2b5cff', '#8f3dff', '#ff3d8b', '#ffb03d'],
+  plays: ['#1b2a6b', '#2b7fff', '#3de0ff', '#f2fbff'],
+};
+const SCALE_COLORS = Object.fromEntries(Object.entries(SCALES).map(([k, list]) => [k, list.map((c) => new THREE.Color(c))]));
+function gradient(stops, t, out) {
+  const x = Math.min(1, Math.max(0, t)) * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(x));
+  return out.copy(stops[i]).lerp(stops[i + 1], x - i);
+}
+
 // Les quartiers. Chaque artiste de plusieurs albums « pousse » comme une
 // tache à partir d'une case de départ : on ajoute une à une les cases libres
 // voisines, en préférant celles qui gardent le quartier compact et proche du
@@ -57,6 +123,8 @@ const rand = (seed) => {
 // des formes irrégulières. Les quartiers se touchent et s'emboîtent comme des
 // pièces de puzzle. Les gros artistes, posés en premier, forment le
 // centre-ville ; les artistes d'un seul album bouchent les trous.
+// Sans regroupement (réglage « Disposition : par écoutes »), chaque album est
+// son propre groupe : les plus écoutés au centre, en spirale.
 const N4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 const cellKey = (i, j) => `${i},${j}`;
 
@@ -69,11 +137,11 @@ function hashUnit(s) {
   return (h >>> 0) / 4294967296;
 }
 
-function districtLayout(albums, artists) {
+function districtLayout(albums, artists, group = true) {
   const rank = new Map(artists.map((a, i) => [a.name.toLowerCase(), i]));
   const groups = new Map();
   for (const album of albums) {
-    const key = album.artist.toLowerCase();
+    const key = group ? album.artist.toLowerCase() : album.id;
     if (!groups.has(key)) groups.set(key, { key, name: album.artist, albums: [], plays: 0 });
     const g = groups.get(key);
     g.albums.push(album);
@@ -348,6 +416,7 @@ uniform float uTime;
 uniform float uCell;
 uniform float uRadius;
 uniform float uFogDensity;
+uniform float uGrid;
 uniform vec3 uBase;
 uniform vec3 uLine;
 uniform vec3 uFog;
@@ -391,10 +460,10 @@ void main() {
   contour *= step(0.6, rc) * (0.5 + 0.5 * step(0.5, fract(ang * 12.0 / 6.2831853)));
 
   vec3 col = uBase;
-  col += uLine * grid * (0.1 + sweep * 0.7 + ring * 1.4) * fade;
-  col += uLine * xing * 0.4 * fade;
-  col += uLine * contour * 0.12 * fade;
-  col += uLine * (sweep * 0.05 + ring * 0.08) * fade;
+  col += uLine * grid * ((0.1 + sweep * 0.7) * uGrid + ring * 1.4) * fade;
+  col += uLine * xing * 0.4 * uGrid * fade;
+  col += uLine * contour * 0.12 * uGrid * fade;
+  col += uLine * (sweep * 0.05 * uGrid + ring * 0.08) * fade;
 
   float dist = length(vWorld - cameraPosition);
   float f = 1.0 - exp(-uFogDensity * uFogDensity * dist * dist);
@@ -457,8 +526,9 @@ void main() {
 // ---------------------------------------------------------------- la ville
 
 export class City extends EventTarget {
-  constructor(container, { labels, lowPower = false, reducedMotion = false } = {}) {
+  constructor(container, { labels, lowPower = false, reducedMotion = false, look = {} } = {}) {
     super();
+    this.look = { ...LOOK_DEFAULTS, ...look };
     this.container = container;
     this.labelsEl = labels;
     this.lowPower = lowPower;
@@ -492,6 +562,7 @@ export class City extends EventTarget {
     this._initRenderer();
     this._initWorld();
     this._initEvents();
+    this.setLook({});
   }
 
   // ------------------------------------------------------------ mise en place
@@ -516,7 +587,7 @@ export class City extends EventTarget {
     c.minDistance = 2.5;
     c.maxDistance = 140;
     c.screenSpacePanning = false;
-    c.autoRotate = !this.reducedMotion;
+    c.autoRotate = !this.reducedMotion && this.look.rotate;
     c.autoRotateSpeed = 0.35;
     c.addEventListener('start', () => {
       this.flight = null;
@@ -599,7 +670,7 @@ export class City extends EventTarget {
       depthWrite: false,
       blending: THREE.AdditiveBlending,
     });
-    const stars = new THREE.Points(starGeo, this.starMat);
+    const stars = (this.stars = new THREE.Points(starGeo, this.starMat));
     stars.frustumCulled = false;
     this.sky.add(stars);
     scene.add(this.sky);
@@ -611,6 +682,7 @@ export class City extends EventTarget {
         uCell: { value: CELL },
         uRadius: { value: 8 },
         uFogDensity: { value: 0.02 },
+        uGrid: { value: 1 },
         uBase: { value: this.palette.base },
         uLine: { value: this.palette.line },
         uFog: { value: this.palette.fog },
@@ -691,7 +763,7 @@ export class City extends EventTarget {
     this.slabMesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 500);
     scene.add(this.slabMesh);
 
-    this.coverGeo = new THREE.PlaneGeometry(COVER, COVER);
+    this.coverGeo = SHAPES[this.look.shape].cover();
     this.haloGeo = new THREE.PlaneGeometry(COVER * 1.7, COVER * 1.7);
 
     // Lumières
@@ -708,7 +780,7 @@ export class City extends EventTarget {
     // « En écoute » : une couche fantôme qui pulse + un faisceau vers le ciel
     this.np = new THREE.Group();
     this.npGhost = new THREE.Mesh(
-      new THREE.BoxGeometry(1, 1, 1),
+      SHAPES[this.look.shape].slab(1),
       new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
     );
     this.npBeamMat = new THREE.ShaderMaterial({
@@ -761,9 +833,72 @@ export class City extends EventTarget {
   }
 
   _slabGeometry(h) {
-    const geo = new RoundedBoxGeometry(1, h, 1, 2, Math.min(0.05, h * 0.3));
+    const geo = SHAPES[this.look.shape].slab(h);
     geo.setAttribute('aGlow', this.glowAttr);
     return geo;
+  }
+
+  // ------------------------------------------------------------ réglages
+
+  // Applique les réglages d'apparence (seuls ceux qui ont changé coûtent quelque chose).
+  setLook(changes) {
+    const prev = this.look;
+    const look = (this.look = { ...prev, ...changes });
+    if (!SHAPES[look.shape]) look.shape = 'square';
+    if (!SKIES[look.sky]) look.sky = 'night';
+    if (look.shape !== prev.shape) this._setShape();
+    if (look.colors !== prev.colors || look.mono !== prev.mono) {
+      for (const p of this.piles.values()) this._colorPile(p);
+    }
+    if (look.colors !== prev.colors || look.mono !== prev.mono || look.sky !== prev.sky) this._updateMood();
+    this.plates.visible = look.plates;
+    if (this.labelsEl) this.labelsEl.hidden = !look.labels;
+    this.stars.visible = this.dust.visible = look.stars;
+    this.groundMat.uniforms.uGrid.value = look.grid ? 1 : 0;
+    if (this.bloom) this.bloom.enabled = look.bloom;
+    if (!look.rotate) this.controls.autoRotate = false;
+    // regrouper ou non par artiste : les tours glissent vers leurs nouvelles cases
+    if (look.group !== prev.group && this.data) this.setData(this.data, this.coverMap, { domain: this.domain });
+  }
+
+  _setShape() {
+    const shape = SHAPES[this.look.shape];
+    const oldSlab = this.slabMesh.geometry;
+    this.slabMesh.geometry = this._slabGeometry(this.slabH);
+    oldSlab.dispose();
+    const oldCover = this.coverGeo;
+    this.coverGeo = shape.cover();
+    for (const p of this.piles.values()) p.cover.geometry = this.coverGeo;
+    oldCover.dispose();
+    this.npGhost.geometry.dispose();
+    this.npGhost.geometry = shape.slab(1);
+  }
+
+  // La couleur d'une tour selon le mode choisi. « Pochettes » : la couleur de
+  // la pochette ; les autres modes lisent les données (artiste, date de
+  // dernière écoute, nombre d'écoutes) ou imposent une seule couleur.
+  _colorPile(pile) {
+    const a = pile.album;
+    const share = Math.sqrt(a.plays / Math.max(1, this.maxPlays));
+    switch (this.look.colors) {
+      case 'artist':
+        pile.color.setHSL(hashUnit(a.artist.toLowerCase()), 0.75, 0.56, THREE.SRGBColorSpace);
+        break;
+      case 'time': {
+        const [d0, d1] = this.domain;
+        gradient(SCALE_COLORS.time, ((a.last ?? d0) - d0) / Math.max(1, d1 - d0), pile.color);
+        break;
+      }
+      case 'plays':
+        gradient(SCALE_COLORS.plays, share, pile.color);
+        break;
+      case 'mono':
+        pile.color.set(this.look.mono).multiplyScalar(0.55 + 0.45 * share);
+        break;
+      default:
+        pile.color.copy(pile.coverColor);
+    }
+    pile.halo.material.color.copy(pile.color);
   }
 
   _initEvents() {
@@ -840,7 +975,8 @@ export class City extends EventTarget {
     this.domain = domain;
     this.nowPlayingId = data.nowPlaying?.albumId || null;
 
-    const { cellOf, districts } = districtLayout(data.albums, data.artists);
+    this.coverMap = covers;
+    const { cellOf, districts } = districtLayout(data.albums, data.artists, this.look.group);
     const shadows = this.renderer.shadowMap.enabled;
 
     const seen = new Set();
@@ -921,6 +1057,7 @@ export class City extends EventTarget {
 
     // Échelle : la tour la plus haute fait ~TARGET_HEIGHT, quel que soit le volume
     this.maxPlays = Math.max(1, ...data.albums.map((a) => a.plays));
+    for (const p of this.piles.values()) this._colorPile(p); // (les modes Récence et Écoutes dépendent de la période)
     const maxLayers = Math.max(1, ...data.albums.map((a) => Math.ceil(a.plays / unit)));
     const slabH = clamp((TARGET_HEIGHT / maxLayers) * 0.8, 0.045, 0.3);
     if (Math.abs(slabH - this.slabH) > 1e-3) {
@@ -966,7 +1103,8 @@ export class City extends EventTarget {
       id: album.id,
       album,
       info: null,
-      color: new THREE.Color(0.6, 0.6, 0.6),
+      color: new THREE.Color(0.6, 0.6, 0.6), // couleur affichée (selon le réglage « Couleurs »)
+      coverColor: new THREE.Color(0.6, 0.6, 0.6), // couleur de la pochette
       cover,
       halo,
       pos: new THREE.Vector3(),
@@ -991,11 +1129,11 @@ export class City extends EventTarget {
 
   _applyCover(pile, info) {
     pile.info = info;
-    pile.color.copy(info.color);
+    pile.coverColor.copy(info.color);
+    this._colorPile(pile);
     pile.cover.material.map = info.texture;
     pile.cover.material.emissiveMap = info.texture;
     pile.cover.material.needsUpdate = true;
-    pile.halo.material.color.copy(info.color);
   }
 
   // Une vraie pochette vient d'arriver : on la pose sur sa tour.
@@ -1003,7 +1141,7 @@ export class City extends EventTarget {
     const pile = this.piles.get(id);
     if (!pile || pile.info === info) return;
     this._applyCover(pile, info);
-    if (pile.rank < 120) this.moodDirty = true;
+    if (pile.rank < 120 && this.look.colors === 'cover') this.moodDirty = true;
   }
 
   _disposePile(pile) {
@@ -1018,28 +1156,30 @@ export class City extends EventTarget {
   // couleurs des pochettes, pondérées par le nombre d'écoutes.
   _updateMood() {
     const piles = [...this.piles.values()].filter((p) => p.alive);
-    if (!piles.length) return;
     // (les 120 albums principaux suffisent pour l'ambiance, même avec 1 000 tours)
     const sorted = piles.sort((a, b) => b.album.plays - a.album.plays).slice(0, 120);
+    const S = SKIES[this.look.sky];
+    const base = new THREE.Color(S.mood);
     // Moyenner toutes les pochettes donne une couleur boueuse : on prend la
     // teinte des deux albums les plus écoutés, ravivée, puis on la mélange à
-    // un bleu nuit pour que la ville reste nocturne.
-    const first = sorted[0].color;
-    const second = (sorted[1] || sorted[0]).color;
+    // la couleur du fond choisi pour que la ville reste nocturne.
+    const first = sorted[0]?.color ?? base;
+    const second = (sorted[1] || sorted[0])?.color ?? base;
     const tint = first.clone().lerp(second, 0.35);
     const hsl = {};
     tint.getHSL(hsl);
     tint.setHSL(hsl.h, Math.max(0.6, hsl.s), 0.45);
-    const mood = new THREE.Color('#3a2a8c').lerp(tint, 0.45);
+    const mood = base.clone().lerp(tint, 0.45 * S.tint);
 
     const T = this.paletteTarget;
-    T.fog.set('#06050e').lerp(mood, 0.05);
-    T.base.set('#040309').lerp(mood, 0.02);
-    T.top.set('#010105').lerp(mood, 0.01);
-    T.glow.copy(tint).multiplyScalar(0.12);
-    T.accent.copy(second).multiplyScalar(0.2);
-    T.line.set('#8a80d6').lerp(tint, 0.3).multiplyScalar(0.5);
-    this.hemi.color.set('#b9b0ff').lerp(tint, 0.3);
+    T.fog.set(S.fog).lerp(mood, 0.05);
+    T.base.set(S.base).lerp(mood, 0.02);
+    T.top.set(S.top).lerp(mood, 0.01);
+    T.glow.copy(base).lerp(tint, S.tint).multiplyScalar(S.glow);
+    T.accent.copy(base).lerp(second, S.tint).multiplyScalar(S.aurora);
+    T.line.set(S.line).lerp(tint, 0.3 * S.tint).multiplyScalar(0.5);
+    this.hemi.color.set(S.hemi).lerp(tint, 0.3 * S.tint);
+    if (!sorted.length) return;
 
     // poussière : chaque grain prend la couleur d'un album (tirage pondéré)
     const colors = this.dust.geometry.attributes.aColor;
@@ -1277,7 +1417,7 @@ export class City extends EventTarget {
       if (k >= 1) this.flight = null;
       return;
     }
-    if (!this.reducedMotion && !this.focused && this.view === 'city' && this.time - this.lastInteraction > 14) {
+    if (!this.reducedMotion && this.look.rotate && !this.focused && this.view === 'city' && this.time - this.lastInteraction > 14) {
       this.controls.autoRotate = true;
     }
     this.controls.update();

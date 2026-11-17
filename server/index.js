@@ -10,7 +10,7 @@ import { gzipSync } from 'node:zlib';
 import { LruCache } from './cache.js';
 import { HistoryStore } from './history.js';
 import { COVER_HOSTS, LastfmError, lastfmCalls } from './lastfm.js';
-import { RANGES, buildView } from './view.js';
+import { RANGES, UNITS, buildView } from './view.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -75,8 +75,19 @@ app.get('/api/config', (req, res) => {
     hasApiKey: Boolean(API_KEY),
     ranges: Object.keys(RANGES),
     cacheTtlSeconds: TTL_S,
+    minPlays: MIN_PLAYS, // valeur « Auto » du réglage « minimum d'écoutes »
   });
 });
+
+// Réglages envoyés par la page. Valeur absente ou invalide → choix automatique.
+function viewOptions(query) {
+  const min = Number(query.minPlays);
+  const unit = Number(query.unit);
+  return {
+    minPlays: Number.isInteger(min) && min >= 1 && min <= 100 ? min : null,
+    unit: UNITS.includes(unit) ? unit : 'auto',
+  };
+}
 
 app.get('/api/listening', async (req, res) => {
   res.set('Cache-Control', 'no-store');
@@ -96,12 +107,13 @@ app.get('/api/listening', async (req, res) => {
     return sendError(res, new LastfmError('Période inconnue.', { status: 400, code: 'BAD_RANGE' }));
   }
 
-  const key = `${user.toLowerCase()}|${range}`;
+  const opts = viewOptions(req.query);
+  const key = `${user.toLowerCase()}|${range}|min=${opts.minPlays ?? 'auto'}|unit=${opts.unit}`;
   try {
     const archive = await history.get(user);
     // Au plus un appel à Last.fm par CACHE_TTL_SECONDS, partagé par tous.
     const result = await archive.refresh();
-    const view = viewFor(archive, range);
+    const view = viewFor(archive, range, opts);
     // La période demande des écoutes plus anciennes que l'archive : on va
     // les chercher en tâche de fond (une seule fois).
     if (!view.complete) archive.ensureBackfill();
@@ -129,13 +141,18 @@ app.get('/api/listening', async (req, res) => {
   }
 });
 
-// Une vue par période, recalculée seulement si l'archive a changé (ou toutes
-// les 30 s pour les périodes glissantes « 24 h », « 7 j »…).
-function viewFor(archive, range) {
-  const cached = archive.views.get(range);
+// Une vue par période et par réglages, recalculée seulement si l'archive a
+// changé (ou toutes les 30 s pour les périodes glissantes « 24 h », « 7 j »…).
+// On en garde au plus 16 : des réglages au hasard ne peuvent pas remplir la mémoire.
+const MAX_VIEWS = 16;
+function viewFor(archive, range, { minPlays, unit }) {
+  const key = `${range}|${minPlays ?? 'auto'}|${unit}`;
+  const cached = archive.views.get(key);
   if (cached && cached.version === archive.version && Date.now() - cached.at < 30_000) return cached.view;
-  const view = buildView(archive, { range, minPlays: MIN_PLAYS, maxAlbums: MAX_ALBUMS });
-  archive.views.set(range, { version: archive.version, at: Date.now(), view });
+  const view = buildView(archive, { range, minPlays: minPlays ?? MIN_PLAYS, strict: minPlays !== null, unit, maxAlbums: MAX_ALBUMS });
+  archive.views.delete(key); // (réinsérée à la fin : la Map garde l'ordre d'utilisation)
+  archive.views.set(key, { version: archive.version, at: Date.now(), view });
+  if (archive.views.size > MAX_VIEWS) archive.views.delete(archive.views.keys().next().value);
   return view;
 }
 

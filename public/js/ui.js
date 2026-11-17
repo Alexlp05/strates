@@ -146,7 +146,7 @@ export const hidePanel = () => (panel.hidden = true);
 
 // ------------------------------------------------------------ classement
 
-export function renderRanking(data, covers, onPick) {
+export function renderRanking(data, covers, onPick, colorOf) {
   const stats = $('stats');
   const list = $('rank-list');
   const s = data.stats;
@@ -178,7 +178,7 @@ export function renderRanking(data, covers, onPick) {
             h('span', { class: 'r-rank' }, String(i + 1)),
             h('img', { src: info?.thumb || '', alt: '', width: 40, height: 40, loading: 'lazy' }),
             h('span', { class: 'r-text' }, h('strong', {}, album.name), h('span', {}, album.artist)),
-            h('span', { class: 'r-count', style: { '--w': `${(album.plays / max) * 100}%`, '--c': `#${info?.color.getHexString() || '888888'}` } }, album.plays.toLocaleString('fr-FR')),
+            h('span', { class: 'r-count', style: { '--w': `${(album.plays / max) * 100}%`, '--c': colorOf ? colorOf(album.id) : `#${info?.color.getHexString() || '888888'}` } }, album.plays.toLocaleString('fr-FR')),
           ),
         );
       }),

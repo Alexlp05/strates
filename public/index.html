@@ -41,6 +41,10 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18h4v-7H4v7Zm6 0h4V6h-4v12Zm6 0h4v-4h-4v4Z"/></svg>
           <span>Classement</span>
         </button>
+        <button type="button" id="btn-settings" class="chip" aria-pressed="false" aria-controls="settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9.2a2.5 2.5 0 0 0 4.6 0H20V5h-2.2a2.5 2.5 0 0 0-4.6 0H4v2Zm0 6h2.2a2.5 2.5 0 0 0 4.6 0H20v-2h-9.2a2.5 2.5 0 0 0-4.6 0H4v2Zm0 6h9.2a2.5 2.5 0 0 0 4.6 0H20v-2h-2.2a2.5 2.5 0 0 0-4.6 0H4v2Z"/></svg>
+          <span>Réglages</span>
+        </button>
       </div>
     </nav>
   </header>
@@ -55,6 +59,14 @@
     </div>
     <div id="stats" class="stats"></div>
     <ol id="rank-list" class="rank-list"></ol>
+  </aside>
+
+  <aside id="settings" class="drawer drawer-right" aria-label="Réglages" hidden>
+    <div class="drawer-head">
+      <h2>Réglages</h2>
+      <button type="button" class="close" data-close="settings" aria-label="Fermer les réglages">×</button>
+    </div>
+    <div id="settings-body"></div>
   </aside>
 
   <aside id="panel" class="panel" aria-label="Détail de l'album" hidden>

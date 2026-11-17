@@ -5,6 +5,7 @@
 import { City } from './city.js';
 import { Timeline } from './timeline.js';
 import { loadCovers, placeholderCover, upgradeCover, coverUrl } from './covers.js';
+import { DATA_KEYS, DEFAULTS, loadSettings, renderSettings, saveSettings } from './settings.js';
 import * as ui from './ui.js';
 
 const $ = (id) => document.getElementById(id);
@@ -59,6 +60,7 @@ const state = {
   config: null,
   user: params.get('user') || null,
   range: RANGES.includes(params.get('range')) ? params.get('range') : RANGES.includes(store.get('strates:range')) ? store.get('strates:range') : 'recent',
+  settings: loadSettings(), // panneau « Réglages » (voir settings.js)
   data: null,
   meta: null,
   domain: [0, 1],
@@ -90,7 +92,7 @@ function webglAvailable() {
 let city = null;
 if (webglAvailable()) {
   try {
-    city = new City($('scene'), { labels: $('labels'), lowPower, reducedMotion });
+    city = new City($('scene'), { labels: $('labels'), lowPower, reducedMotion, look: state.settings });
     city.start();
   } catch (err) {
     console.error('WebGL indisponible', err);
@@ -104,25 +106,35 @@ const timeline = new Timeline($('timeline'), $('timeline-track'));
 const BIG_COVERS = lowPower ? 60 : 220;
 
 const albumById = (id) => state.data?.albums.find((a) => a.id === id);
+// Couleur d'un album dans la page (frise, classement…) : la même que sa tour,
+// qui dépend du réglage « Couleurs des tours ».
 const cssColor = (id) => {
-  const c = state.covers.get(id)?.color;
+  const c = city?.piles.get(id)?.color ?? state.covers.get(id)?.color;
   return c ? `#${c.getHexString()}` : '#888';
 };
 
 // ------------------------------------------------------------ chargement
 
-async function load({ intro = false, silent = false } = {}) {
+// Les réglages « Données » partent avec la demande ; « Auto » = rien à envoyer.
+function listeningUrl() {
+  const p = new URLSearchParams({ user: state.user, range: state.range });
+  for (const k of DATA_KEYS) if (state.settings[k] !== 'auto') p.set(k, state.settings[k]);
+  return `/api/listening?${p}`;
+}
+
+// reshape : un réglage a changé, la ville se réorganise sans rejouer l'intro.
+async function load({ intro = false, silent = false, reshape = false } = {}) {
   clearTimeout(state.pollTimer);
   stopRetry();
   if (!state.user) return askUser();
   const token = ++state.loadToken;
   if (!state.data && !silent) ui.setLoader('Chargement des écoutes…');
   try {
-    const data = await api(`/api/listening?user=${encodeURIComponent(state.user)}&range=${state.range}`);
+    const data = await api(listeningUrl());
     if (token !== state.loadToken) return;
     store.set(snapshotKey(), JSON.stringify({ savedAt: Date.now(), data }));
     state.meta = data.meta;
-    await applyData(data, { intro });
+    await applyData(data, { intro, reshape });
     if (data.meta.stale) {
       ui.showBanner(`Last.fm ne répond pas. Tu vois les écoutes archivées par le serveur (Last.fm consulté ${fmt.ago(Date.now() - data.meta.fetchedAt)}).`);
     } else ui.showBanner(null);
@@ -136,7 +148,7 @@ async function load({ intro = false, silent = false } = {}) {
   }
 }
 
-async function applyData(data, { intro = false } = {}) {
+async function applyData(data, { intro = false, reshape = false } = {}) {
   const prev = state.data;
   const first = !prev;
   // Pochette dessinée tout de suite ; la vraie la remplace dès qu'elle arrive.
@@ -160,7 +172,7 @@ async function applyData(data, { intro = false } = {}) {
   ui.setLoader(null);
   ui.hideMessage();
   renderSummary(data);
-  ui.renderRanking(data, state.covers, pickAlbum);
+  ui.renderRanking(data, state.covers, pickAlbum, cssColor);
   timeline.setData({ histogram: data.histogram, domain: state.domain, colorOf: cssColor });
   renderNowPlaying(data);
 
@@ -169,7 +181,7 @@ async function applyData(data, { intro = false } = {}) {
     setCursor(Infinity, 'live');
   } else {
     // nouvelle période, nouvel utilisateur ou nouvelle échelle (1 couche = n écoutes) : on reconstruit
-    const rebuilt = intro || first || prev.range !== data.range || prev.user !== data.user || prev.unit !== data.unit;
+    const rebuilt = intro || first || prev.range !== data.range || prev.user !== data.user || (!reshape && prev.unit !== data.unit);
     if (rebuilt) {
       stopReplay();
       city.clearFocus({ fly: false, silent: true });
@@ -180,6 +192,13 @@ async function applyData(data, { intro = false } = {}) {
       const duration = reducedMotion ? 0.6 : Math.min(6.5, 2.4 + data.layers.length * 0.012);
       city.intro(duration + 0.8);
       startReplay({ duration, intro: true });
+    } else if (reshape && prev.unit !== data.unit) {
+      // nouvelle échelle choisie dans les réglages : toutes les couches
+      // changent, la ville repousse vite dans l'ordre des écoutes (sans l'intro)
+      stopReplay();
+      city.setCursor(-Infinity);
+      city.setData(data, state.covers, { domain: state.domain });
+      startReplay({ duration: reducedMotion ? 0.6 : 2.5 });
     } else {
       city.setData(data, state.covers, { domain: state.domain });
       if (state.mode === 'live') announce(prev, data);
@@ -190,6 +209,7 @@ async function applyData(data, { intro = false } = {}) {
   }
 
   if (!data.layers.length && !data.nowPlaying && data.complete) showEmpty();
+  renderSettingsPanel(); // (les notes du panneau dépendent des données)
 }
 
 // Remplace la pochette d'un album (et libère la mémoire graphique de l'ancienne).
@@ -218,7 +238,7 @@ function refreshCoverDom() {
   coverDomTimer = setTimeout(() => {
     if (!state.data) return;
     timeline.draw();
-    ui.renderRanking(state.data, state.covers, pickAlbum);
+    ui.renderRanking(state.data, state.covers, pickAlbum, cssColor);
     renderNowPlaying(state.data);
     if (!city) renderFallback(state.data);
     const pile = state.selected && city?.piles.get(state.selected);
@@ -289,7 +309,7 @@ function announce(prev, data) {
 
 // ------------------------------------------------------------ erreurs
 
-const snapshotKey = () => `strates:v3:${(state.user || '').toLowerCase()}:${state.range}`;
+const snapshotKey = () => `strates:v3:${(state.user || '').toLowerCase()}:${state.range}:${state.settings.unit}:${state.settings.minPlays}`;
 
 async function handleError(err, { silent }) {
   ui.setLoader(null);
@@ -408,6 +428,16 @@ function askUser(reason) {
 }
 
 function showEmpty() {
+  // des écoutes, mais aucun album n'atteint le minimum choisi dans les réglages
+  if (state.data?.stats.albums) {
+    ui.showMessage({
+      icon: 'empty',
+      title: 'Pas de tour',
+      text: `Aucun album n'a été écouté ${state.settings.minPlays} fois ou plus sur ${RANGE_TEXT[state.range]}. Baisse le minimum d'écoutes dans les réglages.`,
+      actions: [{ label: 'Ouvrir les réglages', primary: true, onClick: () => { ui.hideMessage(); toggleSettings(true); } }, { label: 'Fermer', onClick: ui.hideMessage }],
+    });
+    return;
+  }
   const actions = state.range !== 'recent' ? [{ label: 'Voir mes 200 dernières écoutes', primary: true, onClick: () => setRange('recent') }] : [];
   ui.showMessage({
     icon: 'empty',
@@ -562,7 +592,46 @@ function pickAlbum(id) {
 function toggleRanking(open = $('ranking').hidden) {
   $('ranking').hidden = !open;
   $('btn-rank').setAttribute('aria-pressed', String(open));
-  if (open && window.innerWidth < 900) city?.clearFocus();
+  if (open && window.innerWidth < 900) {
+    city?.clearFocus();
+    toggleSettings(false);
+  }
+}
+
+// ------------------------------------------------------------ réglages
+
+function toggleSettings(open = $('settings').hidden) {
+  $('settings').hidden = !open;
+  $('btn-settings').setAttribute('aria-pressed', String(open));
+  if (!open) return;
+  // le panneau prend la place de celui de l'album (à droite, ou en bas sur téléphone)
+  ui.hidePanel();
+  state.selected = null;
+  city?.clearFocus({ silent: true });
+  if (window.innerWidth < 900) toggleRanking(false);
+  renderSettingsPanel();
+}
+
+function renderSettingsPanel() {
+  if ($('settings').hidden) return;
+  renderSettings($('settings-body'), state.settings, {
+    data: state.data,
+    defaultMinPlays: state.config?.minPlays ?? 3,
+    hasBloom: Boolean(city?.composer),
+    has3d: Boolean(city),
+    onChange: changeSetting,
+  });
+}
+
+function changeSetting(key, value) {
+  const prev = state.settings;
+  state.settings = key === 'reset' ? { ...DEFAULTS } : { ...prev, [key]: value };
+  saveSettings(state.settings);
+  city?.setLook(state.settings);
+  // écoutes par couche ou minimum : le serveur refait la vue (sans rappeler Last.fm)
+  if (DATA_KEYS.some((k) => state.settings[k] !== prev[k]) && state.user) load({ reshape: true });
+  refreshCoverDom(); // frise, classement et panneau reprennent les couleurs des tours
+  renderSettingsPanel();
 }
 
 function setRange(range) {
@@ -598,6 +667,7 @@ $('btn-view').addEventListener('click', () => {
 });
 
 $('btn-rank').addEventListener('click', () => toggleRanking());
+$('btn-settings').addEventListener('click', () => toggleSettings());
 $('user-btn').addEventListener('click', () => askUser());
 $('btn-live').addEventListener('click', () => {
   stopReplay();
@@ -623,7 +693,8 @@ for (const btn of document.querySelectorAll('[data-close]')) {
       ui.hidePanel();
       state.selected = null;
       city?.clearFocus({ silent: true });
-    } else toggleRanking(false);
+    } else if (btn.dataset.close === 'settings') toggleSettings(false);
+    else toggleRanking(false);
   });
 }
 
@@ -633,7 +704,8 @@ document.addEventListener('keydown', (e) => {
     ui.hidePanel();
     state.selected = null;
     city?.clearFocus({ silent: true });
-  } else if (!$('ranking').hidden) toggleRanking(false);
+  } else if (!$('settings').hidden) toggleSettings(false);
+  else if (!$('ranking').hidden) toggleRanking(false);
   else if (ui.messageVisible() && state.data) ui.hideMessage();
 });
 
@@ -649,6 +721,7 @@ if (city) {
     }
     state.selected = pile.id;
     upgrade(pile.id);
+    toggleSettings(false);
     if (window.innerWidth < 900) toggleRanking(false);
     ui.showPanel(pile, state.data, state.domain);
   });

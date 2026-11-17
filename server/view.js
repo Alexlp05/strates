@@ -7,15 +7,21 @@
 // Sur une grande période, une tour ne peut pas avoir 800 couches : on choisit
 // une « unité » (1 couche = 1, 5, 25… écoutes) pour que la plus haute tour
 // garde au plus ~40 couches et la ville au plus ~3000 couches en tout.
+//
+// Les deux réglages peuvent venir de la page (panneau « Réglages ») :
+// - minPlays imposé : appliqué même sur les petites périodes ;
+// - unit imposée : respectée tant que la ville reste dessinable (au plus 3000
+//   couches, et 150 par tour) ; sinon on prend la plus petite unité possible.
 
 import { albumIdOf } from './lastfm.js';
 
 const DAY = 86400;
 export const RANGES = { recent: 0, '24h': DAY, '7d': 7 * DAY, '30d': 30 * DAY, '1y': 365 * DAY, all: Infinity };
 const RECENT_COUNT = 200;
-const UNITS = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 250, 500, 1000, 2000, 5000, 10000];
+export const UNITS = [1, 2, 3, 4, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 250, 500, 1000, 2000, 5000, 10000];
 const SMALL_CITY = 200; // en dessous de ce nombre d'albums, on les montre tous
-const MAX_LAYERS_PER_TOWER = 40;
+const MAX_LAYERS_PER_TOWER = 40; // unité automatique
+const MAX_LAYERS_PER_TOWER_CHOSEN = 150; // unité choisie dans les réglages
 const MAX_LAYERS = 3000;
 const HIST_STEPS = [900, 1800, 3600, 2 * 3600, 3 * 3600, 6 * 3600, 12 * 3600, DAY, 2 * DAY, 7 * DAY, 14 * DAY, 30 * DAY, 91 * DAY, 365 * DAY];
 const HIST_MAX_BINS = 160;
@@ -30,7 +36,7 @@ function lowerBound(list, ts) {
   return lo;
 }
 
-export function buildView(history, { range, minPlays = 3, maxAlbums = 1500 }) {
+export function buildView(history, { range, minPlays = 3, strict = false, unit: wanted = 'auto', maxAlbums = 1500 }) {
   const now = Math.floor(Date.now() / 1000);
   const all = history.scrobbles;
   let list;
@@ -76,19 +82,20 @@ export function buildView(history, { range, minPlays = 3, maxAlbums = 1500 }) {
   }
 
   // 2. Les albums affichés : tous ceux écoutés au moins `minPlays` fois
-  //    (tous si la période en compte peu), + celui en cours d'écoute.
+  //    (tous si la période en compte peu, sauf si le minimum est imposé),
+  //    + celui en cours d'écoute.
   //    `maxAlbums` n'est qu'une sécurité pour les très grosses bibliothèques.
   const sorted = [...albums.values()].sort((a, b) => b.plays - a.plays || (b.times.at(-1) || 0) - (a.times.at(-1) || 0));
   const played = sorted.filter((a) => a.plays);
-  const shown = (played.length <= SMALL_CITY ? played : played.filter((a) => a.plays >= minPlays)).slice(0, maxAlbums);
+  const shown = (played.length <= SMALL_CITY && !strict ? played : played.filter((a) => a.plays >= minPlays)).slice(0, maxAlbums);
   if (nowPlaying && !shown.some((a) => a.id === nowPlaying.albumId)) shown.push(albums.get(nowPlaying.albumId));
   const shownIds = new Set(shown.map((a) => a.id));
 
   // 3. L'unité : combien d'écoutes par couche
   const maxPlays = Math.max(1, ...shown.map((a) => a.plays));
-  const unit =
-    UNITS.find((u) => Math.ceil(maxPlays / u) <= MAX_LAYERS_PER_TOWER && shown.reduce((n, a) => n + Math.ceil(a.plays / u), 0) <= MAX_LAYERS) ??
-    UNITS.at(-1);
+  const fits = (u, perTower) => Math.ceil(maxPlays / u) <= perTower && shown.reduce((n, a) => n + Math.ceil(a.plays / u), 0) <= MAX_LAYERS;
+  const unitAuto = UNITS.find((u) => fits(u, MAX_LAYERS_PER_TOWER)) ?? UNITS.at(-1);
+  const unit = wanted === 'auto' ? unitAuto : UNITS.find((u) => u >= wanted && fits(u, MAX_LAYERS_PER_TOWER_CHOSEN)) ?? UNITS.at(-1);
 
   // 4. Les couches : une couche apparaît au moment de sa première écoute
   const layers = [];
@@ -140,6 +147,7 @@ export function buildView(history, { range, minPlays = 3, maxAlbums = 1500 }) {
     total: Math.max(history.total, all.length),
     count: list.length,
     unit,
+    unitAuto, // ce que le serveur aurait choisi seul (affiché dans les réglages)
     complete: rangeComplete,
     nowPlaying,
     latest: latest ? { ts: latest.ts, track: latest.track, artist: latest.artist, albumId: ids.at(-1) } : null,
@@ -164,7 +172,7 @@ export function buildView(history, { range, minPlays = 3, maxAlbums = 1500 }) {
       artists: artists.size,
       tracks: trackCounts.size,
       shownAlbums: shown.length,
-      minPlays: shown.length < played.length ? minPlays : 1, // seuil réellement appliqué
+      minPlays: strict || shown.length < played.length ? minPlays : 1, // seuil réellement appliqué
       hoursUtc,
       topTrack: topKey ? { name: topKey.split('\u0000')[0], artist: topKey.split('\u0000')[1], plays: topPlays } : null,
     },
