@@ -86,6 +86,11 @@ function slabText(slab) {
 
 const panel = $('panel');
 const panelBody = $('panel-body');
+let onArtistPick = null;
+// Ce qui se passe quand on clique un artiste invité dans le panneau (main.js).
+export function onPanelArtist(fn) {
+  onArtistPick = fn;
+}
 
 export function showPanel(pile, data, domain) {
   const { album, info, color } = pile;
@@ -101,6 +106,10 @@ export function showPanel(pile, data, domain) {
   const [t0, t1] = domain;
   const span = Math.max(1, t1 - t0);
   const isNow = data.nowPlaying?.albumId === album.id;
+  // les feats de l'artiste sur la période (calculés par le serveur, voir server/feats.js)
+  const me = album.artist.toLowerCase();
+  const inCity = new Set(data.albums.map((a) => a.artist.toLowerCase()));
+  const feats = (data.feats || []).filter((f) => f.a.toLowerCase() === me || f.b.toLowerCase() === me).slice(0, 8);
 
   panel.style.setProperty('--accent', css);
   panelBody.replaceChildren(
@@ -136,6 +145,19 @@ export function showPanel(pile, data, domain) {
               h('span', { class: 'p-track-bar' }, h('i', { style: { width: `${(plays / maxTrack) * 100}%` } })),
               h('span', { class: 'p-track-count' }, `×${plays.toLocaleString('fr-FR')}`),
             ),
+          ))
+      : null,
+    feats.length
+      ? h('div', { class: 'p-feats' },
+          h('p', { class: 'p-feats-title' }, `Feats de ${album.artist}`),
+          h('ul', {},
+            feats.map((f) => {
+              const other = f.a.toLowerCase() === me ? f.b : f.a;
+              const name = inCity.has(other.toLowerCase())
+                ? h('button', { type: 'button', title: `Aller au quartier de ${other}`, onclick: () => onArtistPick?.(other) }, other)
+                : h('strong', {}, other);
+              return h('li', {}, name, h('small', {}, `${fmt.plays(f.plays)} · ${f.tracks[0][0]}`));
+            }),
           ))
       : null,
   );

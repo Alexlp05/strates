@@ -583,6 +583,13 @@ function renderFallback(data) {
 
 // ------------------------------------------------------------ interactions
 
+// Clic sur un artiste invité dans le panneau : on vole vers sa tour principale.
+function focusArtist(name) {
+  const album = state.data?.albums.find((a) => a.artist.toLowerCase() === name.toLowerCase());
+  if (album) pickAlbum(album.id);
+}
+ui.onPanelArtist(focusArtist);
+
 function pickAlbum(id) {
   if (city) city.focusById(id);
   upgrade(id);

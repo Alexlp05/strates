@@ -18,6 +18,7 @@ Une pile de disques grandit à chaque fois qu'on en remet un. Strates pousse l'i
 | Les **tons** d'une même tour | des morceaux différents de l'album |
 | Le **ciel, la brume, la poussière** | les couleurs des pochettes les plus écoutées |
 | Un **faisceau** vers le ciel | le morceau en cours d'écoute (couche fantôme qui pulse) |
+| Un **arc** lumineux entre deux tours | un feat : les deux artistes ont chanté ensemble sur un morceau que tu as écouté. L'arc relie leurs tours principales, passe de la couleur de l'un à celle de l'autre, et il est plus épais si tu as beaucoup écouté leurs feats |
 
 La **frise** en bas est un histogramme peint avec les couleurs des pochettes. On peut la parcourir pour remonter le temps : la ville se démonte et se reconstruit couche par couche. Le bouton ▶ rejoue toute la période, de quelques heures à plusieurs années.
 
@@ -58,7 +59,7 @@ Sans Docker (Node 20 ou plus) : `npm install` puis `npm run dev`.
 
 - **Glisser** pour tourner autour de la ville, **molette / pincer** pour zoomer, clic droit ou deux doigts pour se déplacer.
 - **Survoler** une tour : pochette, nombre d'écoutes, et le morceau et l'heure de la couche pointée.
-- **Cliquer** une tour : les couches s'écartent (une par écoute) et le panneau détaille les morceaux.
+- **Cliquer** une tour : les couches s'écartent (une par écoute) et le panneau détaille les morceaux, puis les feats de l'artiste ; cliquer un invité emmène à son quartier.
 - **Vue carte** : vue du dessus, la ville devient une mosaïque de pochettes.
 - **Classement** : la liste des albums, pour tout retrouver sans la 3D.
 - **Réglages** : voir ci-dessous.
@@ -79,6 +80,7 @@ Le bouton **Réglages** ouvre un panneau qui change la ville sans toucher au cod
 | Fond | Nuit, Minuit, Aurore, Crépuscule, Encre | le ciel, la brume et la carte |
 | Forme | Carré, Rond, Hexagone | la forme des couches et des pochettes (Rond : une pile de vinyles) |
 | Disposition | Quartiers par artiste, Par écoutes | avec ou sans quartiers |
+| Feats | Tous, Au survol, Masqués | les arcs entre artistes : les plus écoutés en permanence (et tous ceux d'une tour quand on la survole) ; seulement ceux de la tour survolée ou ouverte ; aucun |
 | Effets | interrupteurs | noms et sols des quartiers, étoiles, grille, halo lumineux, rotation automatique |
 
 Les deux premiers réglages partent au serveur avec la demande (`/api/listening?unit=5&minPlays=2`) : il reconstruit la vue à partir de son archive, **sans rappeler Last.fm**. Les autres ne changent que l'affichage et s'appliquent tout de suite.
@@ -97,7 +99,8 @@ server/
   index.js    routes, Content-Security-Policy, fichiers statiques
   lastfm.js   appel à Last.fm, gestion des erreurs, lecture des réponses
   history.js  l'archive : nouvelles écoutes (HIT / MISS / STALE), récupération de l'historique, disque
-  view.js     une période → albums, couches, frise, statistiques
+  view.js     une période → albums, couches, frise, feats, statistiques
+  feats.js    les feats lus dans les titres des morceaux
   cache.js    cache LRU des pochettes
 public/
   index.html  structure de la page
@@ -114,6 +117,7 @@ compose.server.yaml, Caddyfile   mise en ligne (voir plus bas)
 - **L'archive** (`history.js`) : le serveur garde toutes les écoutes déjà vues. Un rafraîchissement ne demande à Last.fm que la page 1 (les 200 plus récentes et le morceau en cours) et y ajoute ce qui est nouveau. Pour « 1 an » et « Tout », il remonte une seule fois l'historique avec le paramètre `to` (« écoutes avant telle date »), page après page, en faisant une courte pause entre deux appels, puis l'enregistre sur le disque.
 - **La vue** (`view.js`) : pour une période, le serveur regroupe les écoutes par album, garde les albums écoutés au moins 3 fois, choisit l'unité (1 couche = 1, 10, 50… écoutes, pour que la plus haute tour ait au plus 40 couches) et compte la frise par tranches (heure, jour, semaine…). Le navigateur reçoit au plus ~3 000 couches, soit 45 Ko compressés pour 28 000 écoutes. La réponse brute de Last.fm (très verbeuse) ne sort jamais du serveur.
 - **La disposition** (`districtLayout` dans `city.js`) : les artistes sont posés du plus écouté au moins écouté. Chaque quartier part d'une case libre au bord de la ville, la plus proche du centre, puis « pousse » case par case : on ajoute la case voisine qui garde le quartier compact et proche du centre, plus un peu de hasard (toujours le même pour un artiste donné) qui donne des formes irrégulières. Les quartiers se touchent et s'emboîtent ; les artistes d'un seul album bouchent les trous (aucun trou sur les données testées). L'album le plus écouté prend la case au cœur du quartier. Environ 30 ms pour 1 200 albums.
+- **Les feats** (`feats.js`) : Last.fm ne donne qu'un artiste par écoute ; les invités sont dans le titre, « Titre (feat. A & B) », « [ft. A] », « (with A) ». Le serveur cherche d'abord les noms d'artistes qu'il connaît déjà dans l'archive (du plus long au plus court, pour garder « Bigflo & Oli » ou « Tyler, The Creator » entiers), puis coupe le reste sur « , & et and x ». Chaque paire d'artistes compte ses écoutes et ses morceaux ; la vue envoie les 300 paires les plus écoutées (7 Ko compressés sur tout l'historique). Le navigateur trace un arc (un tube le long d'une courbe de Bézier, avec un shader qui fait circuler des impulsions) entre les tours principales des deux artistes, seulement si les deux sont en ville. Les arcs s'effacent pendant la relecture, car ils résument toute la période.
 - **Les sols de quartier** : une dalle par case, toutes dans un seul `InstancedMesh`. Chaque dalle reçoit un masque de 8 bits (quels voisins font partie du même quartier) ; le shader en déduit la distance au bord du quartier et ne trace le contour que du côté des autres. On obtient la forme exacte de chaque quartier, angles arrondis compris, et entre deux quartiers voisins un double trait, comme une rue. Le sol apparaît avec la première tour pendant la relecture et s'éclaire au survol.
 - **Les pochettes** : les ~220 albums les plus écoutés ont leur pochette en 300×300, les autres en 64×64 (20 fois moins de mémoire graphique), remplacée par la grande quand on ouvre l'album.
 - **La 3D** : toutes les couches sont dans un seul `InstancedMesh` (un seul appel de dessin pour des milliers de couches). La lueur de chaque couche est un attribut par instance ajouté au shader standard. Le sol, le ciel et le faisceau sont des shaders écrits à la main.

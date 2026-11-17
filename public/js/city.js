@@ -60,6 +60,7 @@ export const LOOK_DEFAULTS = {
   sky: 'night', // le fond (voir SKIES)
   shape: 'square', // la forme des tours (voir SHAPES)
   group: true, // quartiers par artiste (sinon : rangées par écoutes)
+  feats: 'all', // arcs entre artistes qui ont fait un feat : all, hover, off
   labels: true,
   plates: true,
   stars: true,
@@ -311,17 +312,17 @@ void main() {
   d *= uCell;
 
   float e = d - 0.085; // contour légèrement en retrait du bord de la case
-  float fw = fwidth(e);
+  float fw = max(fwidth(e), 1e-4);
   float inside = smoothstep(-fw, fw, e);
   // (le trait garde au moins un pixel de large, même vu de loin)
   float lw = 0.014 + fw * 0.75;
   float edge = 1.0 - smoothstep(lw, lw + fw * 1.5, abs(e));
   float rim = inside * exp(-e * 2.6);
   // angles saillants renforcés, comme les repères d'un plan d'urbanisme
-  float corner = smoothstep(0.75, 0.45, dx * uCell) * smoothstep(0.75, 0.45, dy * uCell);
+  float corner = (1.0 - smoothstep(0.45, 0.75, dx * uCell)) * (1.0 - smoothstep(0.45, 0.75, dy * uCell));
   // hachures diagonales, continues d'une case à l'autre
   float hs = (vWorld.x + vWorld.z) * 3.2;
-  float hatch = inside * (1.0 - smoothstep(0.05, 0.05 + fwidth(hs) * 1.5, abs(fract(hs) - 0.5)));
+  float hatch = inside * (1.0 - smoothstep(0.05, 0.05 + max(fwidth(hs), 1e-4) * 1.5, abs(fract(hs) - 0.5)));
 
   // les quartiers se touchent : un fond teinté un peu plus présent les
   // distingue même de loin, quand le contour devient trop fin
@@ -351,6 +352,10 @@ function glowTexture() {
 }
 
 // ---------------------------------------------------------------- shaders
+// Attention aux NaN (« pas un nombre ») : sur le GPU, pow(x, y) avec x < 0 et
+// smoothstep(a, b, x) avec a >= b ne sont pas définis. Un seul pixel NaN
+// suffit : le halo lumineux (bloom) l'étale en un grand rectangle noir. D'où
+// les clamp(), max() et bornes toujours dans l'ordre ci-dessous.
 
 const SKY_VS = /* glsl */ `
 varying vec3 vDir;
@@ -373,9 +378,10 @@ void main() {
   col += uGlow * exp(-max(y, 0.0) * 9.0) * 0.9;
   // voile coloré par les pochettes, qui ondule lentement
   float band = 0.16 + 0.05 * sin(ang * 3.0 + uTime * 0.05) + 0.03 * sin(ang * 7.0 - uTime * 0.08);
-  float aurora = exp(-pow((y - band) * 9.0, 2.0)) * (0.55 + 0.45 * sin(ang * 5.0 + uTime * 0.1));
+  float q = (y - band) * 9.0;
+  float aurora = exp(-q * q) * (0.55 + 0.45 * sin(ang * 5.0 + uTime * 0.1));
   col += uAccent * aurora * 0.55 * smoothstep(-0.02, 0.05, y);
-  col = mix(col, uFog, smoothstep(0.02, -0.1, y));
+  col = mix(col, uFog, 1.0 - smoothstep(-0.1, 0.02, y));
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
@@ -398,7 +404,7 @@ const STARS_FS = /* glsl */ `
 varying float vAlpha;
 void main() {
   float d = length(gl_PointCoord - 0.5);
-  float a = smoothstep(0.5, 0.0, d) * vAlpha;
+  float a = (1.0 - smoothstep(0.0, 0.5, d)) * vAlpha;
   gl_FragColor = vec4(vec3(0.85, 0.88, 1.0), a);
   #include <colorspace_fragment>
 }`;
@@ -425,7 +431,7 @@ varying vec3 vWorld;
 
 float street(float coord, float width) {
   float d = abs(fract(coord) - 0.5);
-  float fw = fwidth(coord);
+  float fw = max(fwidth(coord), 1e-4);
   return 1.0 - smoothstep(width, width + fw * 1.5, d);
 }
 
@@ -456,7 +462,7 @@ void main() {
 
   // cercles de distance, comme sur une carte
   float rc = r / (uCell * 4.0);
-  float contour = 1.0 - smoothstep(0.0, fwidth(rc) * 1.5, abs(fract(rc + 0.5) - 0.5));
+  float contour = 1.0 - smoothstep(0.0, max(fwidth(rc), 1e-4) * 1.5, abs(fract(rc + 0.5) - 0.5));
   contour *= step(0.6, rc) * (0.5 + 0.5 * step(0.5, fract(ang * 12.0 / 6.2831853)));
 
   vec3 col = uBase;
@@ -485,10 +491,40 @@ uniform vec3 uColor;
 uniform float uTime;
 varying vec2 vUv;
 void main() {
-  float a = pow(1.0 - vUv.y, 2.2) * (0.55 + 0.45 * sin(uTime * 3.0 - vUv.y * 40.0));
+  float a = pow(clamp(1.0 - vUv.y, 0.0, 1.0), 2.2) * (0.55 + 0.45 * sin(uTime * 3.0 - vUv.y * 40.0));
   a *= 0.55 + 0.45 * pow(abs(sin(vUv.x * 3.14159 * 2.0)), 0.5);
   gl_FragColor = vec4(uColor * 1.6, a * 0.6);
   #include <colorspace_fragment>
+}`;
+
+// Un arc de feat : un tube dont la couleur passe de celle d'un artiste à
+// celle de l'autre, avec des impulsions qui circulent de l'un à l'autre.
+const FEAT_VS = /* glsl */ `
+varying float vT;
+varying vec3 vWorld;
+void main() {
+  vT = uv.x; // 0 au départ de l'arc, 1 à l'arrivée
+  vec4 w = modelMatrix * vec4(position, 1.0);
+  vWorld = w.xyz;
+  gl_Position = projectionMatrix * viewMatrix * w;
+}`;
+
+const FEAT_FS = /* glsl */ `
+uniform vec3 uA;
+uniform vec3 uB;
+uniform float uAlpha;
+uniform float uTime;
+uniform float uPhase;
+uniform float uFogDensity;
+varying float vT;
+varying vec3 vWorld;
+void main() {
+  vec3 col = mix(uA, uB, vT);
+  float ends = smoothstep(0.0, 0.06, vT) * (1.0 - smoothstep(0.94, 1.0, vT));
+  float flow = pow(max(0.0, 0.5 + 0.5 * sin((vT * 5.0 - uTime * 0.6 + uPhase) * 6.2831853)), 8.0);
+  float dist = length(vWorld - cameraPosition);
+  float fog = exp(-uFogDensity * uFogDensity * dist * dist);
+  gl_FragColor = vec4(col * uAlpha * ends * fog * (0.55 + 1.6 * flow), 1.0);
 }`;
 
 const DUST_VS = /* glsl */ `
@@ -518,7 +554,7 @@ varying vec3 vColor;
 varying float vAlpha;
 void main() {
   float d = length(gl_PointCoord - 0.5);
-  float a = smoothstep(0.5, 0.0, d) * vAlpha;
+  float a = (1.0 - smoothstep(0.0, 0.5, d)) * vAlpha;
   gl_FragColor = vec4(vColor * 1.4, a * 0.8);
   #include <colorspace_fragment>
 }`;
@@ -733,6 +769,12 @@ export class City extends EventTarget {
       blending: THREE.AdditiveBlending,
       toneMapped: false,
     });
+    // Les arcs des feats (voir _buildFeats)
+    this.featGroup = new THREE.Group();
+    this.featArcs = [];
+    this.featTime = { value: 0 }; // uniform partagé par tous les arcs
+    scene.add(this.featGroup);
+
     this.plates = new THREE.InstancedMesh(plateGeo, this.plateMat, MAX_PILES);
     this.plates.count = 0;
     this.plates.frustumCulled = false;
@@ -852,6 +894,8 @@ export class City extends EventTarget {
     }
     if (look.colors !== prev.colors || look.mono !== prev.mono || look.sky !== prev.sky) this._updateMood();
     this.plates.visible = look.plates;
+    this.featGroup.visible = look.feats !== 'off';
+    if (look.feats === 'off') this.featPartners = null;
     if (this.labelsEl) this.labelsEl.hidden = !look.labels;
     this.stars.visible = this.dust.visible = look.stars;
     this.groundMat.uniforms.uGrid.value = look.grid ? 1 : 0;
@@ -1085,6 +1129,63 @@ export class City extends EventTarget {
 
     this._updateMood();
     this._buildLabels();
+    this._buildFeats(data.feats || []);
+  }
+
+  // Les feats : un arc lumineux relie deux artistes qui ont chanté ensemble,
+  // du sommet de la tour principale de l'un (son album le plus écouté, au cœur
+  // de son quartier) à celle de l'autre. Plus tu as écouté leurs feats, plus
+  // l'arc est épais. Seuls les liens entre artistes présents en ville sont tracés.
+  _buildFeats(feats) {
+    for (const arc of this.featArcs) {
+      this.featGroup.remove(arc.mesh);
+      arc.mesh.geometry.dispose();
+      arc.mesh.material.dispose();
+    }
+    this.featArcs = [];
+    this.featPartners = null;
+    const anchor = new Map(); // artiste → sa tour principale (les albums arrivent du plus écouté au moins écouté)
+    for (const album of this.data.albums) {
+      const pile = this.piles.get(album.id);
+      const key = album.artist.toLowerCase();
+      if (pile?.alive && !anchor.has(key)) anchor.set(key, pile);
+    }
+    const links = feats
+      .map((f) => ({ ...f, pa: anchor.get(f.a.toLowerCase()), pb: anchor.get(f.b.toLowerCase()) }))
+      .filter((f) => f.pa && f.pb && f.pa !== f.pb)
+      .slice(0, this.lowPower ? 40 : 120);
+    const max = Math.max(1, ...links.map((l) => l.plays));
+    const top = (p) => p.slabs.length * this.step + 0.1; // hauteur de la tour terminée
+    links.forEach((link, rank) => {
+      const a = link.pa.target, b = link.pb.target;
+      const start = new THREE.Vector3(a.x, top(link.pa), a.z);
+      const end = new THREE.Vector3(b.x, top(link.pb), b.z);
+      const mid = start.clone().lerp(end, 0.5);
+      mid.y = Math.max(start.y, end.y) + 0.8 + Math.hypot(b.x - a.x, b.z - a.z) * 0.32;
+      const w = Math.sqrt(link.plays / max);
+      const geo = new THREE.TubeGeometry(new THREE.QuadraticBezierCurve3(start, mid, end), 48, 0.025 + 0.055 * w, 5, false);
+      const mat = new THREE.ShaderMaterial({
+        vertexShader: FEAT_VS,
+        fragmentShader: FEAT_FS,
+        uniforms: {
+          uA: { value: new THREE.Color() },
+          uB: { value: new THREE.Color() },
+          uAlpha: { value: 0 },
+          uPhase: { value: rand(rank + 0.37) },
+          uTime: this.featTime,
+          uFogDensity: this.plateMat.uniforms.uFogDensity,
+        },
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        toneMapped: false,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.renderOrder = 2;
+      mesh.visible = false;
+      this.featGroup.add(mesh);
+      this.featArcs.push({ mesh, link, w, rank, alpha: 0, keyA: link.a.toLowerCase(), keyB: link.b.toLowerCase() });
+    });
   }
 
   _createPile(album, info) {
@@ -1370,6 +1471,7 @@ export class City extends EventTarget {
     this.camera.updateMatrixWorld();
     this._updatePiles(dt, t);
     this._updateDistricts(dt);
+    this._updateFeats(dt);
     this._updateNowPlaying(t);
     this._updateLabels(dt);
 
@@ -1464,7 +1566,7 @@ export class City extends EventTarget {
       }
 
       let dimTarget = 0;
-      if (this.focused && this.focused !== pile) dimTarget = 0.72;
+      if (this.focused && this.focused !== pile && !this.featPartners?.has(pile)) dimTarget = 0.72;
       else if (!this.focused && this.highlightSet && !this.highlightSet.has(pile.id)) dimTarget = 0.8;
       pile.dim = damp(pile.dim, dimTarget, 6, dt);
       const hoverTarget = this.hovered?.pile === pile ? 1 : 0;
@@ -1596,6 +1698,37 @@ export class City extends EventTarget {
     this.plateColor.needsUpdate = true;
     this.plateMask.needsUpdate = true;
     this.plateHi.needsUpdate = true;
+  }
+
+  // Réglage « Feats » : « Tous » montre les liens les plus écoutés et, au
+  // survol d'une tour, seulement ceux de son artiste ; « Au survol » ne montre
+  // que ces derniers. Les liens résument toute la période : ils s'effacent
+  // pendant une relecture et reviennent quand la ville est construite.
+  _updateFeats(dt) {
+    if (this.look.feats === 'off' || !this.featArcs.length) return;
+    this.featTime.value = this.time;
+    const hot = this.focused || this.hovered?.pile || null;
+    const hotKey = hot ? hot.album.artist.toLowerCase() : null;
+    const live = this.cursor === Infinity ? 1 : 0;
+    const shown = this.lowPower ? 20 : 45;
+    const partners = new Set();
+    for (const arc of this.featArcs) {
+      const involved = hotKey !== null && (arc.keyA === hotKey || arc.keyB === hotKey);
+      let target;
+      if (involved) target = 1;
+      else if (this.look.feats === 'hover' || arc.rank >= shown) target = 0;
+      else target = hotKey ? 0.05 : 0.22 + 0.5 * arc.w;
+      target *= live * Math.min(arc.link.pa.presence, arc.link.pb.presence);
+      if (involved && this.focused) partners.add(arc.keyA === hotKey ? arc.link.pb : arc.link.pa);
+      arc.alpha = damp(arc.alpha, target, 5, dt);
+      arc.mesh.visible = arc.alpha > 0.005;
+      if (!arc.mesh.visible) continue;
+      const u = arc.mesh.material.uniforms;
+      u.uAlpha.value = arc.alpha;
+      u.uA.value.copy(arc.link.pa.color);
+      u.uB.value.copy(arc.link.pb.color);
+    }
+    this.featPartners = partners;
   }
 
   _updateNowPlaying(t) {

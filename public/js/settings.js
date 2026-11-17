@@ -21,7 +21,9 @@ const CHOICES = {
   colors: ['cover', 'artist', 'time', 'plays', 'mono'],
   sky: Object.keys(SKIES),
   shape: ['square', 'round', 'hexagon'],
+  feats: ['all', 'hover', 'off'],
 };
+const FEAT_TEXT = { all: 'Tous', hover: 'Au survol', off: 'Masqués' };
 const MONO = ['#a68bff', '#57c7ff', '#5ee6a8', '#ffb547', '#ff7ab6', '#f2f2f7'];
 const KEY = 'strates:settings';
 
@@ -154,6 +156,18 @@ export function renderSettings(root, s, { data, defaultMinPlays = 3, hasBloom = 
       s.group ? null : 'Plus de quartiers : les albums les plus écoutés au centre, en spirale.'),
   );
 
+  // --- feats
+  let featNote = 'Un arc relie deux artistes qui ont fait un feat ensemble ; il est plus épais si tu as beaucoup écouté leurs feats.';
+  if (data?.feats) {
+    const inCity = new Set(data.albums.map((a) => a.artist.toLowerCase()));
+    const n = data.feats.filter((f) => inCity.has(f.a.toLowerCase()) && inCity.has(f.b.toLowerCase())).length;
+    featNote = `${plural(n, 'lien')} entre artistes de ta ville (${plural(data.stats.featListens || 0, 'écoute')} en feat). `
+      + (s.feats === 'all' ? 'Les plus écoutés sont tracés ; survole une tour pour voir tous les siens.' : s.feats === 'hover' ? 'Survole ou ouvre une tour pour voir ses feats.' : '');
+  }
+  const featSection = section('Feats',
+    h('div', { class: 'set-row' }, options('feats', CHOICES.feats, (v) => FEAT_TEXT[v]), h('p', { class: 'set-note' }, featNote)),
+  );
+
   // --- effets
   const effects = section('Effets',
     h('div', { class: 'switches' },
@@ -165,7 +179,7 @@ export function renderSettings(root, s, { data, defaultMinPlays = 3, hasBloom = 
 
   root.replaceChildren(
     dataSection,
-    ...(has3d ? [colorSection, skySection, shapeSection, effects] : [h('p', { class: 'set-note' }, "Sans 3D, seuls les réglages de données s'appliquent.")]),
+    ...(has3d ? [colorSection, skySection, shapeSection, featSection, effects] : [h('p', { class: 'set-note' }, "Sans 3D, seuls les réglages de données s'appliquent.")]),
     h('button', { type: 'button', class: 'chip set-reset', 'data-focus': 'reset', onclick: () => onChange('reset') }, 'Tout remettre par défaut'),
   );
   if (focused) root.querySelector(`[data-focus="${CSS.escape(focused)}"]`)?.focus();

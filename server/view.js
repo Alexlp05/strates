@@ -13,6 +13,7 @@
 // - unit imposée : respectée tant que la ville reste dessinable (au plus 3000
 //   couches, et 150 par tour) ; sinon on prend la plus petite unité possible.
 
+import { buildFeats, knownArtists } from './feats.js';
 import { albumIdOf } from './lastfm.js';
 
 const DAY = 86400;
@@ -132,6 +133,9 @@ export function buildView(history, { range, minPlays = 3, strict = false, unit: 
     if (shownIds.has(a.id)) entry.albumIds.push(a.id);
     artists.set(k, entry);
   }
+  // 7. Les feats : quels artistes ont chanté ensemble sur cette période (voir feats.js)
+  const { feats, listens: featListens } = buildFeats(list, knownArtists(history));
+
   const [topKey, topPlays] = [...trackCounts.entries()].sort((x, y) => y[1] - x[1])[0] || [];
   const latest = list.at(-1);
 
@@ -166,11 +170,13 @@ export function buildView(history, { range, minPlays = 3, strict = false, unit: 
     layers,
     artists: [...artists.values()].filter((a) => a.albumIds.length).sort((a, b) => b.plays - a.plays),
     histogram,
+    feats,
     stats: {
       listens: list.length,
       albums: [...albums.values()].filter((a) => a.plays).length,
       artists: artists.size,
       tracks: trackCounts.size,
+      featListens,
       shownAlbums: shown.length,
       minPlays: strict || shown.length < played.length ? minPlays : 1, // seuil réellement appliqué
       hoursUtc,
