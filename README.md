@@ -128,7 +128,7 @@ compose.server.yaml   mise en ligne (voir plus bas)
 
 L'app tourne sur le serveur du cours, derrière **Caddy** qui ajoute le HTTPS : **https://student15.wt.thomasjuldo.com**.
 
-Le serveur héberge plusieurs projets derrière **un seul Caddy** (dossier `caddy/` sur le serveur, à côté des projets) : c'est le seul service ouvert sur Internet, et il donne un port à chaque projet (Strates sur 443, le compteur de visites sur 8443). Le serveur utilise le même `docker-compose.yml` plus `compose.server.yaml`, qui retire le port de l'app et la branche sur le réseau Docker `web` partagé avec Caddy, sous le nom `strates` : on ne peut la joindre qu'à travers Caddy, qui lui envoie toutes les requêtes (l'app sert la page et l'API au même endroit).
+Le serveur héberge plusieurs projets derrière **un seul Caddy** (dossier `caddy/` sur le serveur, à côté des projets) : c'est le seul service ouvert sur Internet, et il donne un port à chaque projet (Strates sur 443, le compteur de visites sur 8443, et sous `/counter/` tant que la passerelle du cours ne transmet que les ports 80 et 443). Le serveur utilise le même `docker-compose.yml` plus `compose.server.yaml`, qui retire le port de l'app et la branche sur le réseau Docker `web` partagé avec Caddy, sous le nom `strates` : on ne peut la joindre qu'à travers Caddy, qui lui envoie toutes les requêtes (l'app sert la page et l'API au même endroit).
 
 Première installation (sur le serveur, une fois le réseau `web` créé et Caddy lancé) :
 
