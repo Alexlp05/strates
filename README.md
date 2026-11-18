@@ -111,7 +111,7 @@ public/
   js/covers.js    pochettes : chargement, couleur dominante, pochette générée si absente
   js/ui.js        panneau, classement, info-bulle, messages
   js/settings.js  le panneau Réglages
-compose.server.yaml, Caddyfile   mise en ligne (voir plus bas)
+compose.server.yaml   mise en ligne (voir plus bas)
 ```
 
 - **L'archive** (`history.js`) : le serveur garde toutes les écoutes déjà vues. Un rafraîchissement ne demande à Last.fm que la page 1 (les 200 plus récentes et le morceau en cours) et y ajoute ce qui est nouveau. Pour « 1 an » et « Tout », il remonte une seule fois l'historique avec le paramètre `to` (« écoutes avant telle date »), page après page, en faisant une courte pause entre deux appels, puis l'enregistre sur le disque.
@@ -128,9 +128,9 @@ compose.server.yaml, Caddyfile   mise en ligne (voir plus bas)
 
 L'app tourne sur le serveur du cours, derrière **Caddy** qui ajoute le HTTPS : **https://student15.wt.thomasjuldo.com**.
 
-Le serveur utilise le même `docker-compose.yml` plus `compose.server.yaml`, qui ajoute Caddy (seul service ouvert sur Internet, ports 80 et 443) et retire le port de l'app : on ne peut la joindre qu'à travers Caddy. Le `Caddyfile` envoie toutes les requêtes à l'app, qui sert la page et l'API au même endroit.
+Le serveur héberge plusieurs projets derrière **un seul Caddy** (dossier `caddy/` sur le serveur, à côté des projets) : c'est le seul service ouvert sur Internet, et il donne un port à chaque projet (Strates sur 443, le compteur de visites sur 8443). Le serveur utilise le même `docker-compose.yml` plus `compose.server.yaml`, qui retire le port de l'app et la branche sur le réseau Docker `web` partagé avec Caddy, sous le nom `strates` : on ne peut la joindre qu'à travers Caddy, qui lui envoie toutes les requêtes (l'app sert la page et l'API au même endroit).
 
-Première installation (sur le serveur) :
+Première installation (sur le serveur, une fois le réseau `web` créé et Caddy lancé) :
 
 ```bash
 git clone https://github.com/Alexlp05/strates.git
@@ -147,7 +147,7 @@ git pull
 docker compose -f docker-compose.yml -f compose.server.yaml up -d --build
 ```
 
-Les volumes restent : l'archive des écoutes et le certificat HTTPS survivent aux mises à jour. Les logs : `docker compose -f docker-compose.yml -f compose.server.yaml logs --tail 50`.
+Les volumes restent : l'archive des écoutes survit aux mises à jour (et le certificat HTTPS, gardé par Caddy, aussi). Les logs : `docker compose -f docker-compose.yml -f compose.server.yaml logs --tail 50`.
 
 ## Les règles du projet, et où les vérifier
 

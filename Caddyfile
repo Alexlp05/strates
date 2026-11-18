@@ -1,4 +1,0 @@
-student15.wt.thomasjuldo.com {
-	# Tout va à l'app : elle sert la page et l'API (/api/...) sur le même port.
-	reverse_proxy app:3000
-}
