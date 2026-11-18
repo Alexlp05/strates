@@ -34,8 +34,10 @@ const _q = new THREE.Quaternion();
 const _s = new THREE.Vector3();
 const _v = new THREE.Vector3();
 const _c = new THREE.Color();
+const _tgt = new THREE.Vector3();
+const _sph = new THREE.Spherical();
 
-const { damp, clamp, lerp } = THREE.MathUtils;
+const { damp, clamp, lerp, smoothstep } = THREE.MathUtils;
 const easeOutCubic = (t) => 1 - (1 - t) ** 3;
 const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 function easeOutBounce(t) {
@@ -594,6 +596,8 @@ export class City extends EventTarget {
     this.raycaster = new THREE.Raycaster();
     this.pointer = { downX: 0, downY: 0, downT: 0 };
     this.viewShift = 0;
+    this.travelState = null; // le travelling de la construction (voir travel)
+    this.fovBoost = 0;
 
     this._initRenderer();
     this._initWorld();
@@ -627,6 +631,7 @@ export class City extends EventTarget {
     c.autoRotateSpeed = 0.35;
     c.addEventListener('start', () => {
       this.flight = null;
+      this.travelState = null; // on prend la caméra : le travelling s'arrête
       this.lastInteraction = this.time;
       c.autoRotate = false;
     });
@@ -1001,7 +1006,8 @@ export class City extends EventTarget {
     const h = this.container.clientHeight || window.innerHeight;
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
-    this.camera.fov = w / h < 0.8 ? 55 : 45;
+    this.baseFov = w / h < 0.8 ? 55 : 45;
+    this.camera.fov = this.baseFov + this.fovBoost;
     this.camera.updateProjectionMatrix();
     if (this.composer) {
       this.composer.setPixelRatio(this.renderer.getPixelRatio());
@@ -1376,6 +1382,7 @@ export class City extends EventTarget {
     const toOff = new THREE.Spherical().setFromVector3(position.clone().sub(target));
     let dTheta = toOff.theta - fromOff.theta;
     dTheta = ((((dTheta + Math.PI) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) - Math.PI;
+    this.travelState = null;
     this.flight = { fromT, toT: target.clone(), fromOff, toOff, dTheta, start: this.time, duration: this.reducedMotion ? 0.01 : duration };
   }
 
@@ -1437,6 +1444,117 @@ export class City extends EventTarget {
     this.focused = null;
     if (fly) this.overview(1.4);
     if (!silent) this.dispatchEvent(new CustomEvent('select', { detail: { pile: null } }));
+  }
+
+  // ------------------------------------------------------------ travelling
+  // Pendant la construction (intro et ▶), la caméra entre dans la ville : elle
+  // rase les toits, tourne lentement (dans le sens de la rotation automatique)
+  // et suit la tour qui grandit le plus en ce moment. En fin de construction
+  // elle prend du recul, puis endTravel({ reveal }) remonte à la vue d'ensemble.
+  // Toucher la caméra, mettre en pause ou parcourir la frise l'arrête.
+
+  travel(duration) {
+    if (this.reducedMotion || this.view !== 'city' || this.focused || duration < 3) return;
+    const target = this.controls.target.clone();
+    const off = new THREE.Spherical().setFromVector3(this.camera.position.clone().sub(target));
+    this.flight = null;
+    this.controls.autoRotate = false;
+    this.travelState = {
+      // en temps réel, comme la relecture (this.time ralentit si les images
+      // par seconde chutent : la caméra prendrait du retard sur la ville)
+      startMs: performance.now(),
+      duration,
+      // plus on part de loin (l'intro part du ciel), plus la plongée est longue
+      blend: Math.min(duration * 0.35, clamp(0.9 + off.radius / 60, 1.4, 3)),
+      from: { target, off },
+      focus: new THREE.Vector3(0, 0.9, 0),
+      hero: null,
+      nextPick: 0,
+      roof: 0,
+    };
+  }
+
+  endTravel({ reveal = false } = {}) {
+    if (!this.travelState) return;
+    this.travelState = null;
+    if (reveal) this.overview(2.6);
+  }
+
+  // La tour à suivre : celle qui reçoit le plus de couches en ce moment, en
+  // préférant les grosses tours et celles proches du cadre (la caméra glisse
+  // d'un quartier au voisin au lieu de sauter d'un bout à l'autre de la ville).
+  _pickHero(tr) {
+    tr.nextPick = this.time + 1.6;
+    let best = null, bestScore = 0, heroScore = 0;
+    for (const pile of this.piles.values()) {
+      if (!pile.alive || !(pile.activity > 0.02)) continue;
+      const d = Math.hypot(pile.pos.x - tr.focus.x, pile.pos.z - tr.focus.z);
+      const score = (pile.activity * (0.35 + pile.album.plays / this.maxPlays)) / (1 + d / 10);
+      if (pile === tr.hero) heroScore = score;
+      if (score > bestScore) {
+        best = pile;
+        bestScore = score;
+      }
+    }
+    if (!tr.hero?.alive || bestScore > heroScore * 1.3) tr.hero = best;
+  }
+
+  // Hauteur des toits (pochettes comprises) autour d'un point.
+  _roofAt(x, z) {
+    let top = 0;
+    const r2 = (CELL * 1.15) ** 2;
+    for (const pile of this.piles.values()) {
+      if (pile.presence < 0.05) continue;
+      const dx = pile.pos.x - x, dz = pile.pos.z - z;
+      if (dx * dx + dz * dz < r2) top = Math.max(top, (pile.top || 0) + 0.45 + (pile.lift || 0) * 0.6);
+    }
+    return top;
+  }
+
+  _updateTravel(tr, dt) {
+    const now = this.time;
+    const elapsed = (performance.now() - tr.startMs) / 1000;
+    const p = clamp(elapsed / tr.duration, 0, 1);
+    // on reste tout près au moins jusqu'à 60 % de la construction, et jamais
+    // moins de 30 % de la durée après la fin de la plongée
+    const backStart = Math.max(0.6, tr.blend / tr.duration + 0.3);
+    const back = smoothstep(p, backStart, 1); // 0 au cœur de la construction, 1 à la fin
+    const portrait = this.camera.aspect < 0.9;
+
+    // ce qu'on regarde : la tour suivie, puis le centre de la ville à la fin
+    if (now >= tr.nextPick) this._pickHero(tr);
+    const h = tr.hero;
+    const toCenter = 1 - smoothstep(p, backStart + 0.05, 1);
+    const fx = h ? h.pos.x * toCenter : 0;
+    const fz = h ? h.pos.z * toCenter : 0;
+    // vers le haut de la tour, pour garder le toit (la pochette) dans le cadre
+    const fy = h ? lerp(clamp((h.top || 0) * 0.72, 0.7, 4.2), 0.9, 1 - toCenter) : 0.9;
+    tr.focus.set(damp(tr.focus.x, fx, 1.1, dt), damp(tr.focus.y, fy, 1.1, dt), damp(tr.focus.z, fz, 1.1, dt));
+
+    // tout près des toits, puis un peu de recul en fin de construction
+    const near = portrait ? 10.5 : 7.5;
+    const overview = (this.radius * 1.8 + 6) * (portrait ? 1.45 : 1);
+    const far = Math.max(near, Math.min(overview * 0.8, near * 1.6 + this.radius * 0.35));
+    const radius = lerp(near, far, back);
+    const phi = lerp(1.16, 1.04, back);
+    const theta = tr.from.off.theta - elapsed * 0.14;
+
+    // plongée : on part de la pose actuelle et on rejoint la trajectoire
+    const b = easeInOutCubic(clamp(elapsed / tr.blend, 0, 1));
+    _tgt.copy(tr.from.target).lerp(tr.focus, b);
+    _tgt.x += Math.sin(now * 0.53) * 0.12 * b; // un léger flottement, caméra à l'épaule
+    _tgt.y += Math.sin(now * 0.71) * 0.06 * b;
+    _sph.set(lerp(tr.from.off.radius, radius, b), lerp(tr.from.off.phi, phi, b), theta);
+    this.camera.position.setFromSpherical(_sph).add(_tgt);
+
+    // jamais dans une tour : la caméra reste au-dessus des toits voisins
+    // (et monte avec eux pendant que la ville pousse)
+    const roof = Math.max(1.1, this._roofAt(this.camera.position.x, this.camera.position.z));
+    tr.roof = damp(tr.roof, roof, roof > tr.roof ? 6 : 2, dt);
+    this.camera.position.y = Math.max(this.camera.position.y, tr.roof);
+
+    this.controls.target.copy(_tgt);
+    this.camera.lookAt(_tgt);
   }
 
   // ------------------------------------------------------------ rendu
@@ -1504,6 +1622,19 @@ export class City extends EventTarget {
       this.camera.setViewOffset(w, h, this.viewShift, this.viewShiftY, w, h);
     } else if (this.camera.view?.enabled) this.camera.clearViewOffset();
 
+    // un peu plus grand angle pendant le travelling : plus de perspective
+    const fovTarget = this.travelState ? 7 : 0;
+    if (this.fovBoost !== fovTarget) {
+      this.fovBoost = Math.abs(this.fovBoost - fovTarget) < 0.01 ? fovTarget : damp(this.fovBoost, fovTarget, 1.5, dt);
+      this.camera.fov = this.baseFov + this.fovBoost;
+      this.camera.updateProjectionMatrix();
+    }
+
+    if (this.travelState) {
+      this._updateTravel(this.travelState, dt);
+      return;
+    }
+
     const f = this.flight;
     if (f) {
       const k = easeInOutCubic(clamp((this.time - f.start) / f.duration, 0, 1));
@@ -1541,6 +1672,7 @@ export class City extends EventTarget {
     for (const pile of this.piles.values()) {
       let any = false;
       let inserting = false;
+      let falling = 0; // couches en train de tomber (pour le travelling)
       for (const s of pile.slabs) {
         if (s.target) any = true;
         if (s.t < s.target) {
@@ -1553,9 +1685,14 @@ export class City extends EventTarget {
           s.t = Math.max(0, s.t - dt / 0.3);
           if (s.t <= 0) s.landed = false;
         }
-        if (s.t > 0 && s.t < 1) inserting = true;
+        if (s.t > 0 && s.t < 1) {
+          inserting = true;
+          if (s.target) falling++;
+        }
         if (s.flash > 0) s.flash = Math.max(0, s.flash - dt * 1.5);
       }
+      // activité récente de la tour : ce que le travelling suit
+      pile.activity = (pile.activity || 0) * Math.exp(-1.4 * dt) + falling * dt;
 
       const isNP = live && pile.id === this.nowPlayingId;
       const presenceTarget = pile.alive && (any || isNP) ? 1 : 0;

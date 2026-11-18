@@ -189,9 +189,10 @@ async function applyData(data, { intro = false, reshape = false } = {}) {
       state.selected = null;
       city.setCursor(-Infinity);
       city.setData(data, state.covers, { domain: state.domain });
-      const duration = reducedMotion ? 0.6 : Math.min(6.5, 2.4 + data.layers.length * 0.012);
+      // (jusqu'à 8,5 s : le temps que la caméra plonge, suive la construction de près, puis recule)
+      const duration = reducedMotion ? 0.6 : Math.min(8.5, 2.4 + data.layers.length * 0.012);
       city.intro(duration + 0.8);
-      startReplay({ duration, intro: true });
+      startReplay({ duration, intro: true, travel: true });
     } else if (reshape && prev.unit !== data.unit) {
       // nouvelle échelle choisie dans les réglages : toutes les couches
       // changent, la ville repousse vite dans l'ordre des écoutes (sans l'intro)
@@ -459,7 +460,8 @@ function setCursor(T, mode) {
   renderClock();
 }
 
-function startReplay({ duration = 14, intro = false, resume = false } = {}) {
+// travel : la caméra entre dans la ville et suit la construction (intro et ▶)
+function startReplay({ duration = 14, intro = false, resume = false, travel = false } = {}) {
   const list = state.data?.layers || [];
   stopReplay();
   if (!list.length) return setCursor(Infinity, 'live');
@@ -471,6 +473,7 @@ function startReplay({ duration = 14, intro = false, resume = false } = {}) {
     startP = i <= 0 ? 0 : i / N;
   }
   const started = performance.now() - startP * duration * 1000;
+  if (travel) city?.travel(duration * (1 - startP));
   document.body.classList.toggle('intro', intro);
   $('btn-play').classList.add('playing');
   const tick = (now) => {
@@ -482,7 +485,7 @@ function startReplay({ duration = 14, intro = false, resume = false } = {}) {
     const i = Math.floor(f);
     const T = i >= N ? t1 : (i === 0 ? t0 : list[i - 1].ts) + ((list[i].ts - (i === 0 ? t0 : list[i - 1].ts)) * (f - i));
     if (p >= 1) {
-      stopReplay();
+      stopReplay({ reveal: true }); // la caméra recule sur la ville terminée
       setCursor(Infinity, 'live');
       city?.pulse(null, 1.2);
       return;
@@ -493,9 +496,10 @@ function startReplay({ duration = 14, intro = false, resume = false } = {}) {
   state.replay = requestAnimationFrame(tick);
 }
 
-function stopReplay() {
+function stopReplay({ reveal = false } = {}) {
   if (state.replay) cancelAnimationFrame(state.replay);
   state.replay = null;
+  city?.endTravel({ reveal });
   $('btn-play').classList.remove('playing');
   document.body.classList.remove('intro');
 }
@@ -686,7 +690,7 @@ $('btn-play').addEventListener('click', () => {
     setCursor(state.cursor, 'scrub');
   } else {
     const resume = state.mode === 'scrub' && state.cursor < (state.data?.layers.at(-1)?.ts ?? 0);
-    startReplay({ duration: 14, resume });
+    startReplay({ duration: 14, resume, travel: true });
   }
 });
 $('now-playing').addEventListener('click', () => {
